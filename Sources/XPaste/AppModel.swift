@@ -200,10 +200,12 @@ final class AppModel {
                         contentHash: ContentHasher.text(text),
                         sourceAppBundleIdentifier: sourceApp
                     )
-                case .files(let paths, let sourceApp):
+                case .files(let references, let sourceApp):
+                    let paths = references.map(\.path)
                     payload = CapturePayload(
                         kind: .files,
                         filePaths: paths,
+                        fileBookmarks: references.map(\.bookmarkData),
                         contentHash: ContentHasher.files(paths),
                         sourceAppBundleIdentifier: sourceApp
                     )

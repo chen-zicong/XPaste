@@ -199,7 +199,12 @@ final class AppEnvironment {
             case .text:
                 content = .text(item.text ?? "")
             case .files:
-                content = .files(item.filePaths)
+                do {
+                    content = .files(try await repository.resolveFileURLs(id: item.id))
+                } catch {
+                    model.errorMessage = error.localizedDescription
+                    return
+                }
             case .image:
                 guard let fileName = item.imageFileName else {
                     model.errorMessage = "图片文件已丢失"

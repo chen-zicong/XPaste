@@ -127,6 +127,12 @@ final class SQLiteDatabase: @unchecked Sendable {
         sqlite3_column_double(statement, column)
     }
 
+    static func data(_ statement: OpaquePointer, column: Int32) -> Data? {
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL,
+              let bytes = sqlite3_column_blob(statement, column) else { return nil }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column)))
+    }
+
     private func prepare(_ sql: String) throws -> OpaquePointer {
         var statement: OpaquePointer?
         let result = sqlite3_prepare_v2(handle, sql, -1, &statement, nil)

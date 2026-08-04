@@ -23,6 +23,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public var thumbnailFileName: String?
     public var imageUTI: String?
     public var filePaths: [String]
+    public var fileBookmarks: [Data?]
     public var sourceAppBundleIdentifier: String?
     public var createdAt: Date
     public var lastUsedAt: Date
@@ -42,6 +43,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         thumbnailFileName: String? = nil,
         imageUTI: String? = nil,
         filePaths: [String] = [],
+        fileBookmarks: [Data?] = [],
         sourceAppBundleIdentifier: String? = nil,
         createdAt: Date = Date(),
         lastUsedAt: Date? = nil,
@@ -60,6 +62,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.thumbnailFileName = thumbnailFileName
         self.imageUTI = imageUTI
         self.filePaths = filePaths
+        self.fileBookmarks = fileBookmarks
         self.sourceAppBundleIdentifier = sourceAppBundleIdentifier
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt ?? createdAt
@@ -80,6 +83,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         case thumbnailFileName
         case imageUTI
         case filePaths
+        case fileBookmarks
         case sourceAppBundleIdentifier
         case createdAt
         case lastUsedAt
@@ -101,6 +105,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         thumbnailFileName = try container.decodeIfPresent(String.self, forKey: .thumbnailFileName)
         imageUTI = try container.decodeIfPresent(String.self, forKey: .imageUTI)
         filePaths = try container.decodeIfPresent([String].self, forKey: .filePaths) ?? []
+        fileBookmarks = try container.decodeIfPresent([Data?].self, forKey: .fileBookmarks) ?? []
         sourceAppBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .sourceAppBundleIdentifier)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         lastUsedAt = try container.decodeIfPresent(Date.self, forKey: .lastUsedAt) ?? createdAt
@@ -114,6 +119,10 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     }
 
     public var storageBytes: Int { contentBytes + thumbnailBytes }
+
+    public var hasRestorableFileBookmarks: Bool {
+        kind != .files || (fileBookmarks.count == filePaths.count && fileBookmarks.allSatisfy { $0 != nil })
+    }
 
     public var title: String {
         switch kind {
@@ -172,6 +181,7 @@ public struct CapturePayload: Sendable {
     public var imageData: Data?
     public var thumbnailData: Data?
     public var filePaths: [String]
+    public var fileBookmarks: [Data?]
     public var imageUTI: String?
     public var contentHash: String
     public var sourceAppBundleIdentifier: String?
@@ -183,6 +193,7 @@ public struct CapturePayload: Sendable {
         imageData: Data? = nil,
         thumbnailData: Data? = nil,
         filePaths: [String] = [],
+        fileBookmarks: [Data?] = [],
         imageUTI: String? = nil,
         contentHash: String,
         sourceAppBundleIdentifier: String? = nil,
@@ -193,6 +204,7 @@ public struct CapturePayload: Sendable {
         self.imageData = imageData
         self.thumbnailData = thumbnailData
         self.filePaths = filePaths
+        self.fileBookmarks = fileBookmarks
         self.imageUTI = imageUTI
         self.contentHash = contentHash
         self.sourceAppBundleIdentifier = sourceAppBundleIdentifier

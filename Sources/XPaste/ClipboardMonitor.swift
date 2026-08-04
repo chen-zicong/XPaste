@@ -4,13 +4,18 @@ import Foundation
 enum ClipboardCapture: @unchecked Sendable {
     case text(String, sourceApp: String?)
     case image(Data, sourceApp: String?)
-    case files([String], sourceApp: String?)
+    case files([CapturedFileReference], sourceApp: String?)
+}
+
+struct CapturedFileReference: Sendable {
+    let path: String
+    let bookmarkData: Data?
 }
 
 enum ClipboardPublish: Sendable {
     case text(String)
     case image(Data)
-    case files([String])
+    case files([URL])
 }
 
 /// Serializes every general-pasteboard read and write away from the UI actor.
@@ -29,6 +34,8 @@ actor ClipboardMonitor {
     private var lastChangeCount: Int
     private var reportedAccessDenied = false
     private var ownWrite: (changeCount: Int, token: String)?
+    private var retainedPublishedObjects: [NSPasteboardWriting] = []
+    private var activeSecurityScopedURLs: [URL] = []
     private var captureHandler: (@MainActor @Sendable (ClipboardCapture) -> Void)?
     private var accessHandler: (@MainActor @Sendable (Bool) -> Void)?
 
@@ -74,38 +81,62 @@ actor ClipboardMonitor {
         return autoreleasepool {
             let token = UUID().uuidString
             let objects: [NSPasteboardWriting]
-
+            let fileURLs: [URL]
             switch content {
             case .text(let text):
                 let item = NSPasteboardItem()
-                item.setString(text, forType: .string)
-                item.setString(token, forType: Self.internalMarker)
+                guard item.setString(text, forType: .string),
+                      item.setString(token, forType: Self.internalMarker) else { return false }
                 objects = [item]
+                fileURLs = []
             case .image(let data):
                 let item = NSPasteboardItem()
-                item.setData(data, forType: .png)
-                item.setString(token, forType: Self.internalMarker)
+                guard item.setData(data, forType: .png),
+                      item.setString(token, forType: Self.internalMarker) else { return false }
                 objects = [item]
-            case .files(let paths):
-                objects = paths.enumerated().map { index, path in
-                    let item = NSPasteboardItem()
-                    item.setString(URL(fileURLWithPath: path).absoluteString, forType: .fileURL)
-                    if index == 0 { item.setString(token, forType: Self.internalMarker) }
-                    return item
-                }
+                fileURLs = []
+            case .files(let URLs):
+                fileURLs = URLs.map(\.standardizedFileURL)
+                guard !fileURLs.isEmpty else { return false }
+                objects = fileURLs.map { $0 as NSURL }
             }
 
-            guard !objects.isEmpty else { return false }
-            guard !Task.isCancelled else { return false }
             pasteboard.clearContents()
-            guard pasteboard.writeObjects(objects) else { return false }
+            releasePublishedResources()
+            let startedAccess = fileURLs.filter { $0.startAccessingSecurityScopedResource() }
+            guard pasteboard.writeObjects(objects) else {
+                startedAccess.forEach { $0.stopAccessingSecurityScopedResource() }
+                return false
+            }
             let finalCount = pasteboard.changeCount
-            guard pasteboard.pasteboardItems?.first?.string(forType: Self.internalMarker) == token,
-                  pasteboard.changeCount == finalCount else { return false }
+
+            if !fileURLs.isEmpty {
+                let writtenURLs = pasteboard.readObjects(
+                    forClasses: [NSURL.self],
+                    options: [.urlReadingFileURLsOnly: true]
+                ) as? [URL] ?? []
+                guard writtenURLs.map(\.standardizedFileURL.path) == fileURLs.map(\.path),
+                      pasteboard.changeCount == finalCount else {
+                    startedAccess.forEach { $0.stopAccessingSecurityScopedResource() }
+                    return false
+                }
+                ownWrite = nil
+                activeSecurityScopedURLs = startedAccess
+            } else {
+                guard pasteboard.pasteboardItems?.first?.string(forType: Self.internalMarker) == token,
+                      pasteboard.changeCount == finalCount else { return false }
+                ownWrite = (finalCount, token)
+            }
+            retainedPublishedObjects = objects
             lastChangeCount = finalCount
-            ownWrite = (finalCount, token)
             return true
         }
+    }
+
+    private func releasePublishedResources() {
+        activeSecurityScopedURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+        activeSecurityScopedURLs.removeAll(keepingCapacity: true)
+        retainedPublishedObjects.removeAll(keepingCapacity: true)
     }
 
     private func pollOnce() async {
@@ -126,6 +157,7 @@ actor ClipboardMonitor {
             guard observedChangeCount != lastChangeCount else { return nil }
             // Update first so denied, malformed, or unsupported contents are not retried forever.
             lastChangeCount = observedChangeCount
+            releasePublishedResources()
 
             if let ownWrite,
                ownWrite.changeCount == observedChangeCount,
@@ -142,7 +174,17 @@ actor ClipboardMonitor {
                 forClasses: [NSURL.self],
                 options: [.urlReadingFileURLsOnly: true]
             ) as? [URL], !urls.isEmpty {
-                capture = .files(urls.map(\.path), sourceApp: sourceApp)
+                let references = urls.map { URL -> CapturedFileReference in
+                    let started = URL.startAccessingSecurityScopedResource()
+                    defer { if started { URL.stopAccessingSecurityScopedResource() } }
+                    let bookmark = try? URL.bookmarkData(
+                        options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                        includingResourceValuesForKeys: [.fileResourceIdentifierKey],
+                        relativeTo: nil
+                    )
+                    return CapturedFileReference(path: URL.path, bookmarkData: bookmark)
+                }
+                capture = .files(references, sourceApp: sourceApp)
             } else if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff) {
                 capture = .image(data, sourceApp: sourceApp)
             } else if let text = pasteboard.string(forType: .string), !text.isEmpty {

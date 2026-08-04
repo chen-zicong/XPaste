@@ -3,6 +3,124 @@ import XCTest
 @testable import XPasteCore
 
 final class HistoryRepositoryTests: XCTestCase {
+    func testFileBookmarksPersistAcrossRepositoryReload() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent("persisted.pdf")
+        try Data("pdf".utf8).write(to: fileURL)
+        let bookmark = try fileURL.bookmarkData(
+            options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+            includingResourceValuesForKeys: [.fileResourceIdentifierKey],
+            relativeTo: nil
+        )
+
+        var repository: HistoryRepository? = HistoryRepository(baseURL: directory.appendingPathComponent("History"))
+        _ = try await repository?.load()
+        let state = try await repository?.record(
+            CapturePayload(
+                kind: .files,
+                filePaths: [fileURL.path],
+                fileBookmarks: [bookmark],
+                contentHash: ContentHasher.files([fileURL.path])
+            ),
+            maxItems: 10
+        )
+        let itemID = try XCTUnwrap(state?.items.first?.id)
+        repository = nil
+
+        let reloaded = HistoryRepository(baseURL: directory.appendingPathComponent("History"))
+        let reloadedState = try await reloaded.load()
+        let item = try XCTUnwrap(reloadedState.items.first { $0.id == itemID })
+        XCTAssertEqual(item.fileBookmarks, [bookmark])
+        XCTAssertTrue(item.hasRestorableFileBookmarks)
+        let resolved = try await reloaded.resolveFileURLs(id: itemID)
+        XCTAssertEqual(resolved, [fileURL.standardizedFileURL])
+    }
+
+    func testLegacyPathOnlyFileRecordUpgradesBookmarkOnFirstResolve() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent("legacy.txt")
+        try Data("legacy".utf8).write(to: fileURL)
+        let repository = HistoryRepository(baseURL: directory.appendingPathComponent("History"))
+        _ = try await repository.load()
+        let state = try await repository.record(
+            CapturePayload(
+                kind: .files,
+                filePaths: [fileURL.path],
+                contentHash: ContentHasher.files([fileURL.path])
+            ),
+            maxItems: 10
+        )
+        let itemID = try XCTUnwrap(state.items.first?.id)
+        XCTAssertFalse(try XCTUnwrap(state.items.first).hasRestorableFileBookmarks)
+
+        let resolved = try await repository.resolveFileURLs(id: itemID)
+        XCTAssertEqual(resolved, [fileURL.standardizedFileURL])
+        let upgradedState = try await repository.load()
+        let upgraded = try XCTUnwrap(upgradedState.items.first { $0.id == itemID })
+        XCTAssertTrue(upgraded.hasRestorableFileBookmarks)
+        XCTAssertNotNil(upgraded.fileBookmarks.first ?? nil)
+    }
+
+    func testVersionTwoDatabaseMigratesFileBookmarkColumnWithoutLosingRecords() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let itemID = UUID()
+        var legacyDatabase: SQLiteDatabase? = try SQLiteDatabase(
+            url: directory.appendingPathComponent("history.sqlite")
+        )
+        try legacyDatabase?.execute(
+            """
+            CREATE TABLE items (
+                id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, text TEXT,
+                image_file_name TEXT, thumbnail_file_name TEXT, image_uti TEXT,
+                file_paths TEXT NOT NULL DEFAULT '[]', source_app_bundle_identifier TEXT,
+                created_at REAL NOT NULL, last_used_at REAL NOT NULL, edited_at REAL,
+                is_favorite INTEGER NOT NULL DEFAULT 0, content_hash TEXT NOT NULL,
+                content_bytes INTEGER NOT NULL DEFAULT 0, thumbnail_bytes INTEGER NOT NULL DEFAULT 0,
+                edit_count INTEGER NOT NULL DEFAULT 0, capture_count INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        try legacyDatabase?.execute(
+            """
+            INSERT INTO items (
+                id, kind, file_paths, created_at, last_used_at, content_hash, content_bytes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            bindings: [
+                .text(itemID.uuidString),
+                .text(ClipboardKind.files.rawValue),
+                .text("[\"/tmp/legacy.pdf\"]"),
+                .real(100),
+                .real(100),
+                .text(ContentHasher.files(["/tmp/legacy.pdf"])),
+                .integer(15)
+            ]
+        )
+        try legacyDatabase?.execute("PRAGMA user_version = 2")
+        legacyDatabase = nil
+
+        let repository = HistoryRepository(baseURL: directory)
+        let state = try await repository.load()
+        let migrated = try XCTUnwrap(state.items.first { $0.id == itemID })
+        XCTAssertEqual(migrated.filePaths, ["/tmp/legacy.pdf"])
+        XCTAssertEqual(migrated.fileBookmarks, [])
+
+        let migratedDatabase = try SQLiteDatabase(url: directory.appendingPathComponent("history.sqlite"))
+        XCTAssertEqual(try migratedDatabase.scalarInt("PRAGMA user_version"), 3)
+        XCTAssertEqual(
+            try migratedDatabase.scalarInt(
+                "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = 'file_bookmarks'"
+            ),
+            1
+        )
+    }
+
     func testLastUsedTimePersistsWithoutChangingCaptureTime() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

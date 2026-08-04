@@ -19,10 +19,11 @@ public enum ClipboardTimestampFormatter {
             return "\(Int(elapsed / 3_600))小时前"
         }
 
-        if calendar.isDateInToday(date) {
+        if calendar.isDate(date, inSameDayAs: now) {
             return "今天 \(time(date, calendar: calendar))"
         }
-        if calendar.isDateInYesterday(date) {
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
             return "昨天 \(time(date, calendar: calendar))"
         }
 

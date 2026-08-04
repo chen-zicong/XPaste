@@ -195,6 +195,13 @@ private struct FilesDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if !item.hasRestorableFileBookmarks {
+                Label("旧记录可能需要重新复制文件以恢复访问授权", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
             ScrollView {
                 LazyVStack(spacing: 7) {
                     ForEach(item.filePaths, id: \.self) { path in

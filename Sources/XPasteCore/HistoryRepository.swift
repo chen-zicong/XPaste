@@ -5,6 +5,8 @@ public enum HistoryRepositoryError: LocalizedError {
     case unsupportedSchema(Int)
     case invalidImagePayload
     case invalidDatabaseRecord(String)
+    case fileReferenceUnavailable
+    case fileAuthorizationRequired
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +16,10 @@ public enum HistoryRepositoryError: LocalizedError {
             "图片数据不完整"
         case .invalidDatabaseRecord(let identifier):
             "历史数据库中存在无法读取的记录：\(identifier)"
+        case .fileReferenceUnavailable:
+            "原文件已移动、删除或当前磁盘未连接"
+        case .fileAuthorizationRequired:
+            "旧文件记录缺少可恢复的访问授权，请重新复制该文件"
         }
     }
 }
@@ -101,7 +107,7 @@ public actor HistoryRepository {
         var wasCreated: Bool
     }
 
-    private static let schemaVersion = 2
+    private static let schemaVersion = 3
 
     public init(baseURL: URL, fileManager: FileManager = .default) {
         self.baseURL = baseURL
@@ -272,6 +278,24 @@ public actor HistoryRepository {
                                 .text(duplicateID.uuidString)
                             ]
                         )
+                    } else if payload.kind == .files {
+                        let encodedBookmarks = try encodeBookmarks(payload.fileBookmarks)
+                        try database.execute(
+                            """
+                            UPDATE items
+                            SET created_at = ?, last_used_at = ?, source_app_bundle_identifier = ?,
+                                capture_count = capture_count + 1, file_paths = ?, file_bookmarks = ?
+                            WHERE id = ?
+                            """,
+                            bindings: [
+                                .real(payload.capturedAt.timeIntervalSince1970),
+                                .real(payload.capturedAt.timeIntervalSince1970),
+                                optionalText(payload.sourceAppBundleIdentifier),
+                                .text(encodePaths(payload.filePaths)),
+                                .blob(encodedBookmarks),
+                                .text(duplicateID.uuidString)
+                            ]
+                        )
                     } else {
                         try database.execute(
                             """
@@ -362,6 +386,7 @@ public actor HistoryRepository {
                 id: id,
                 kind: .files,
                 filePaths: payload.filePaths,
+                fileBookmarks: payload.fileBookmarks,
                 sourceAppBundleIdentifier: payload.sourceAppBundleIdentifier,
                 createdAt: payload.capturedAt,
                 contentHash: payload.contentHash,
@@ -405,6 +430,85 @@ public actor HistoryRepository {
         )
         _ = history.markUsed(id: id, at: date)
         return state()
+    }
+
+    /// Resolves persistent file bookmarks immediately before publishing them
+    /// back to the system pasteboard. Legacy path-only records are migrated on
+    /// first use when macOS still permits XPaste to create a scoped bookmark.
+    public func resolveFileURLs(id: UUID) throws -> [URL] {
+        try ensureLoaded()
+        let database = try requireDatabase()
+        guard let current = try item(id: id, in: database), current.kind == .files else {
+            throw HistoryRepositoryError.fileReferenceUnavailable
+        }
+
+        var resolvedURLs: [URL] = []
+        var bookmarks = current.fileBookmarks
+        if bookmarks.count < current.filePaths.count {
+            bookmarks.append(contentsOf: repeatElement(nil, count: current.filePaths.count - bookmarks.count))
+        } else if bookmarks.count > current.filePaths.count {
+            bookmarks = Array(bookmarks.prefix(current.filePaths.count))
+        }
+        var didChange = bookmarks != current.fileBookmarks
+
+        for index in current.filePaths.indices {
+            let originalURL = URL(fileURLWithPath: current.filePaths[index]).standardizedFileURL
+            var resolvedURL: URL
+            var bookmarkIsStale = false
+
+            if let bookmark = bookmarks[index] {
+                do {
+                    resolvedURL = try URL(
+                        resolvingBookmarkData: bookmark,
+                        options: [.withSecurityScope],
+                        relativeTo: nil,
+                        bookmarkDataIsStale: &bookmarkIsStale
+                    ).standardizedFileURL
+                } catch {
+                    bookmarks[index] = nil
+                    didChange = true
+                    resolvedURL = originalURL
+                }
+            } else {
+                resolvedURL = originalURL
+            }
+
+            guard fileManager.fileExists(atPath: resolvedURL.path),
+                  fileManager.isReadableFile(atPath: resolvedURL.path) else {
+                throw HistoryRepositoryError.fileReferenceUnavailable
+            }
+
+            if bookmarks[index] == nil || bookmarkIsStale {
+                do {
+                    bookmarks[index] = try makeFileBookmark(for: resolvedURL)
+                    didChange = true
+                } catch {
+                    throw HistoryRepositoryError.fileAuthorizationRequired
+                }
+            }
+            resolvedURLs.append(resolvedURL)
+        }
+
+        if didChange {
+            let paths = resolvedURLs.map(\.path)
+            try database.execute(
+                """
+                UPDATE items
+                SET file_paths = ?, file_bookmarks = ?, content_hash = ?, content_bytes = ?
+                WHERE id = ? AND kind = ?
+                """,
+                bindings: [
+                    .text(encodePaths(paths)),
+                    .blob(try encodeBookmarks(bookmarks)),
+                    .text(ContentHasher.files(paths)),
+                    .integer(Int64(paths.reduce(0) { $0 + $1.utf8.count })),
+                    .text(id.uuidString),
+                    .text(ClipboardKind.files.rawValue)
+                ]
+            )
+            try refreshHistory(from: database)
+        }
+        return resolvedURLs
     }
 
     public func updateText(id: UUID, text: String) throws -> RepositoryState {
@@ -606,6 +710,28 @@ public actor HistoryRepository {
         if !hasLoaded { _ = try load() }
     }
 
+    private func makeFileBookmark(for URL: URL) throws -> Data {
+        try URL.bookmarkData(
+            options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+            includingResourceValuesForKeys: [.fileResourceIdentifierKey],
+            relativeTo: nil
+        )
+    }
+
+    private func encodePaths(_ paths: [String]) -> String {
+        let data = (try? JSONEncoder().encode(paths)) ?? Data("[]".utf8)
+        return String(data: data, encoding: .utf8) ?? "[]"
+    }
+
+    private func encodeBookmarks(_ bookmarks: [Data?]) throws -> Data {
+        try JSONEncoder().encode(bookmarks)
+    }
+
+    private func decodeBookmarks(_ data: Data?) -> [Data?] {
+        guard let data else { return [] }
+        return (try? JSONDecoder().decode([Data?].self, from: data)) ?? []
+    }
+
     private func prepareDirectories() throws {
         try fileManager.createDirectory(at: baseURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: assetsURL, withIntermediateDirectories: true)
@@ -658,7 +784,8 @@ public actor HistoryRepository {
                         content_bytes INTEGER NOT NULL DEFAULT 0,
                         thumbnail_bytes INTEGER NOT NULL DEFAULT 0,
                         edit_count INTEGER NOT NULL DEFAULT 0,
-                        capture_count INTEGER NOT NULL DEFAULT 1
+                        capture_count INTEGER NOT NULL DEFAULT 1,
+                        file_bookmarks BLOB NOT NULL DEFAULT X'5B5D'
                     )
                     """
                 )
@@ -718,6 +845,14 @@ public actor HistoryRepository {
                 try database.execute("PRAGMA user_version = \(Self.schemaVersion)")
             }
         }
+        if version > 0, version < 3 {
+            try database.transaction {
+                try database.execute(
+                    "ALTER TABLE items ADD COLUMN file_bookmarks BLOB NOT NULL DEFAULT X'5B5D'"
+                )
+                try database.execute("PRAGMA user_version = \(Self.schemaVersion)")
+            }
+        }
         try database.execute(
             "CREATE INDEX IF NOT EXISTS idx_items_last_used ON items(last_used_at DESC, created_at DESC, id ASC)"
         )
@@ -761,15 +896,15 @@ public actor HistoryRepository {
     }
 
     private func insert(_ item: ClipboardItem, into database: SQLiteDatabase) throws {
-        let pathsData = try JSONEncoder().encode(item.filePaths)
-        let paths = String(data: pathsData, encoding: .utf8) ?? "[]"
+        let paths = encodePaths(item.filePaths)
+        let bookmarks = try encodeBookmarks(item.fileBookmarks)
         try database.execute(
             """
             INSERT OR REPLACE INTO items (
                 id, kind, text, image_file_name, thumbnail_file_name, image_uti, file_paths,
                 source_app_bundle_identifier, created_at, last_used_at, edited_at, is_favorite,
-                content_hash, content_bytes, thumbnail_bytes, edit_count, capture_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                content_hash, content_bytes, thumbnail_bytes, edit_count, capture_count, file_bookmarks
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             bindings: [
                 .text(item.id.uuidString),
@@ -788,7 +923,8 @@ public actor HistoryRepository {
                 .integer(Int64(item.contentBytes)),
                 .integer(Int64(item.thumbnailBytes)),
                 .integer(Int64(item.editCount)),
-                .integer(Int64(max(1, item.captureCount)))
+                .integer(Int64(max(1, item.captureCount))),
+                .blob(bookmarks)
             ]
         )
     }
@@ -798,7 +934,7 @@ public actor HistoryRepository {
             """
             SELECT id, kind, text, image_file_name, thumbnail_file_name, image_uti, file_paths,
                    source_app_bundle_identifier, created_at, last_used_at, edited_at, is_favorite,
-                   content_hash, content_bytes, thumbnail_bytes, edit_count, capture_count
+                   content_hash, content_bytes, thumbnail_bytes, edit_count, capture_count, file_bookmarks
             FROM items
             ORDER BY created_at DESC, id ASC
             """
@@ -829,6 +965,7 @@ public actor HistoryRepository {
                 thumbnailFileName: validatedAssetPath(SQLiteDatabase.text(statement, column: 4)),
                 imageUTI: SQLiteDatabase.text(statement, column: 5),
                 filePaths: paths,
+                fileBookmarks: decodeBookmarks(SQLiteDatabase.data(statement, column: 17)),
                 sourceAppBundleIdentifier: SQLiteDatabase.text(statement, column: 7),
                 createdAt: Date(timeIntervalSince1970: SQLiteDatabase.double(statement, column: 8)),
                 lastUsedAt: Date(timeIntervalSince1970: SQLiteDatabase.double(statement, column: 9)),
@@ -896,7 +1033,7 @@ public actor HistoryRepository {
             """
             SELECT id, kind, text, image_file_name, thumbnail_file_name, image_uti, file_paths,
                    source_app_bundle_identifier, created_at, last_used_at, edited_at, is_favorite,
-                   content_hash, content_bytes, thumbnail_bytes, edit_count, capture_count
+                   content_hash, content_bytes, thumbnail_bytes, edit_count, capture_count, file_bookmarks
             FROM items WHERE id = ? LIMIT 1
             """,
             bindings: [.text(id.uuidString)]
@@ -921,6 +1058,7 @@ public actor HistoryRepository {
                 thumbnailFileName: validatedAssetPath(SQLiteDatabase.text(statement, column: 4)),
                 imageUTI: SQLiteDatabase.text(statement, column: 5),
                 filePaths: paths,
+                fileBookmarks: decodeBookmarks(SQLiteDatabase.data(statement, column: 17)),
                 sourceAppBundleIdentifier: SQLiteDatabase.text(statement, column: 7),
                 createdAt: Date(timeIntervalSince1970: SQLiteDatabase.double(statement, column: 8)),
                 lastUsedAt: Date(timeIntervalSince1970: SQLiteDatabase.double(statement, column: 9)),

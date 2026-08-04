@@ -272,12 +272,18 @@ final class PanelController: NSObject, NSWindowDelegate {
                 self?.failPaste(request, message: "未能自动粘贴；内容已复制", revealPanel: true)
                 return
             }
-            keyDown.postToPid(targetPID)
-            keyUp.postToPid(targetPID)
+            // Post through the HID event tap after the destination is active.
+            // Process-targeted events are ignored by Finder and by several IM
+            // clients even though the same physical Command-V works there.
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.post(tap: .cghidEventTap)
             self.finishPaste(request)
         }
         pasteWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
+        // Activation can be reported before the destination has restored its
+        // first responder. A short settle interval avoids losing the paste in
+        // Finder and Chromium/Electron-based message editors.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
     }
 
     private func finishPaste(_ request: PanelCopyRequest) {
