@@ -16,7 +16,7 @@ struct ClipboardListView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 3) {
+                        LazyVStack(spacing: 0) {
                             ForEach(model.visibleItems) { item in
                                 ClipboardRow(model: model, item: item, isSelected: model.selectedID == item.id)
                                     .id(item.id)
@@ -98,6 +98,7 @@ private struct ClipboardRow: View {
     let item: ClipboardItem
     let isSelected: Bool
     @State private var hovering = false
+    @State private var isTrackingPrimaryPress = false
 
     var body: some View {
         HStack(spacing: 7) {
@@ -131,7 +132,6 @@ private struct ClipboardRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { model.paste(item) }
-            .onTapGesture(count: 1) { model.select(item) }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("选择：\(item.kind.displayName)，\(item.title)")
             .accessibilityValue("\(item.previewText)，\(timestampLabel)，记录于 \(fullTimestamp)")
@@ -202,6 +202,17 @@ private struct ClipboardRow: View {
             }
         }
         .contentShape(Rectangle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard !isTrackingPrimaryPress else { return }
+                    isTrackingPrimaryPress = true
+                    model.select(item)
+                }
+                .onEnded { _ in
+                    isTrackingPrimaryPress = false
+                }
+        )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .onHover { hovering = $0 }
         .contextMenu {
