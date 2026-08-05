@@ -192,48 +192,161 @@ private struct ImageDetailView: View {
 private struct FilesDetailView: View {
     let model: AppModel
     let item: ClipboardItem
+    @State private var report: FileResolutionReport?
+    @State private var isChecking = false
 
     var body: some View {
         VStack(spacing: 0) {
-            if !item.hasRestorableFileBookmarks {
-                Label("旧记录可能需要重新复制文件以恢复访问授权", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-            }
+            statusHeader
+            Divider().opacity(0.45)
             ScrollView {
                 LazyVStack(spacing: 7) {
-                    ForEach(item.filePaths, id: \.self) { path in
-                        HStack(spacing: 11) {
-                            Image(nsImage: NSWorkspace.shared.icon(forFile: path))
-                                .resizable()
-                                .frame(width: 34, height: 34)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(URL(fileURLWithPath: path).lastPathComponent)
-                                    .font(.callout.weight(.medium))
-                                    .lineLimit(1)
-                                Text(path)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            Button {
-                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                            } label: {
-                                Image(systemName: "arrow.forward.circle")
-                            }
-                            .buttonStyle(.borderless)
-                            .help("在 Finder 中显示")
+                    if let report {
+                        ForEach(report.entries, id: \.index) { entry in
+                            fileRow(entry)
                         }
-                        .padding(10)
-                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
+                    } else {
+                        ProgressView("正在检查文件…")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 36)
                     }
                 }
                 .padding(16)
             }
             Spacer(minLength: 0)
+        }
+        .task(id: item.contentHash) { await refresh() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
+            Task { await refresh() }
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in
+            Task { await refresh() }
+        }
+    }
+
+    private var statusHeader: some View {
+        HStack(spacing: 8) {
+            if let report {
+                let availableCount = report.availableURLs.count
+                Label(
+                    "\(availableCount)/\(report.entries.count) 个文件可用",
+                    systemImage: report.unavailableCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                )
+                .foregroundStyle(report.unavailableCount == 0 ? Color.green : Color.orange)
+                if report.unavailableCount > 0, availableCount > 0 {
+                    Text("粘贴时会跳过不可用项")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("正在检查文件状态")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isChecking {
+                ProgressView().controlSize(.small)
+            }
+            Button { Task { await refresh() } } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isChecking)
+            .help("重新检查文件状态")
+            .accessibilityLabel("重新检查文件状态")
+        }
+        .font(.caption)
+        .padding(.horizontal, 16)
+        .frame(height: 42)
+    }
+
+    private func fileRow(_ entry: ResolvedFileReference) -> some View {
+        let displayURL = entry.resolvedURL ?? URL(fileURLWithPath: entry.storedPath)
+        return HStack(spacing: 11) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: displayURL.path))
+                .resizable()
+                .frame(width: 34, height: 34)
+                .opacity(entry.availability == .available ? 1 : 0.55)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displayURL.lastPathComponent)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(displayURL.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Label(statusText(entry.availability), systemImage: statusIcon(entry.availability))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(statusColor(entry.availability))
+            }
+            Spacer()
+            if entry.availability == .available {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([displayURL])
+                } label: {
+                    Image(systemName: "arrow.forward.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("在 Finder 中显示")
+                .accessibilityLabel("在 Finder 中显示")
+            } else {
+                Button("重新定位…") { chooseReplacement(for: entry) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func refresh() async {
+        guard !isChecking else { return }
+        isChecking = true
+        report = await model.fileResolutionReport(for: item)
+        isChecking = false
+    }
+
+    private func chooseReplacement(for entry: ResolvedFileReference) {
+        let panel = NSOpenPanel()
+        panel.title = "重新定位“\(URL(fileURLWithPath: entry.storedPath).lastPathComponent)”"
+        panel.prompt = "重新定位"
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        let parent = URL(fileURLWithPath: entry.storedPath).deletingLastPathComponent()
+        if FileManager.default.fileExists(atPath: parent.path) {
+            panel.directoryURL = parent
+        }
+        guard panel.runModal() == .OK, let URL = panel.url else { return }
+        Task {
+            if await model.replaceFileReference(itemID: item.id, index: entry.index, with: URL) {
+                await refresh()
+            }
+        }
+    }
+
+    private func statusText(_ availability: FileReferenceAvailability) -> String {
+        switch availability {
+        case .available: "可用"
+        case .missing: "文件已删除或移动"
+        case .volumeUnavailable: "所在磁盘未连接"
+        case .authorizationRequired: "需要重新授权"
+        }
+    }
+
+    private func statusIcon(_ availability: FileReferenceAvailability) -> String {
+        switch availability {
+        case .available: "checkmark.circle.fill"
+        case .missing: "questionmark.folder.fill"
+        case .volumeUnavailable: "externaldrive.badge.exclamationmark"
+        case .authorizationRequired: "lock.trianglebadge.exclamationmark"
+        }
+    }
+
+    private func statusColor(_ availability: FileReferenceAvailability) -> Color {
+        switch availability {
+        case .available: .green
+        case .missing: .red
+        case .volumeUnavailable, .authorizationRequired: .orange
         }
     }
 }

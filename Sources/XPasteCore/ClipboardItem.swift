@@ -15,6 +15,50 @@ public enum ClipboardKind: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum FileReferenceAvailability: String, Sendable, Equatable {
+    case available
+    case missing
+    case volumeUnavailable
+    case authorizationRequired
+}
+
+public struct ResolvedFileReference: Sendable, Equatable {
+    public let index: Int
+    public let storedPath: String
+    public let resolvedURL: URL?
+    public let availability: FileReferenceAvailability
+
+    public init(
+        index: Int,
+        storedPath: String,
+        resolvedURL: URL?,
+        availability: FileReferenceAvailability
+    ) {
+        self.index = index
+        self.storedPath = storedPath
+        self.resolvedURL = resolvedURL
+        self.availability = availability
+    }
+}
+
+public struct FileResolutionReport: Sendable, Equatable {
+    public let entries: [ResolvedFileReference]
+
+    public init(entries: [ResolvedFileReference]) {
+        self.entries = entries
+    }
+
+    public var availableURLs: [URL] {
+        entries.compactMap { entry in
+            entry.availability == .available ? entry.resolvedURL : nil
+        }
+    }
+
+    public var unavailableCount: Int {
+        entries.count - availableURLs.count
+    }
+}
+
 public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var kind: ClipboardKind

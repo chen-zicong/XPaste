@@ -90,7 +90,7 @@ struct MainPanelView: View {
                 }
                 .buttonStyle(PanelIconButtonStyle(isSelected: model.isDetailVisible))
                 .disabled(model.selectedItem == nil)
-                .help(model.isDetailVisible ? "收起详情（⌘I）" : "显示详情（⌘I）")
+                .help(model.isDetailVisible ? "收起详情（空格 / ⌘I）" : "显示详情（空格 / ⌘I）")
                 .accessibilityLabel(model.isDetailVisible ? "收起详情" : "显示详情")
             }
 
@@ -284,7 +284,7 @@ struct MainPanelView: View {
             if model.page == .statistics {
                 Text("存储占用与内容类型统计")
             } else {
-                Text("↑↓ 选择  ·  ↩ 粘贴  ·  ←→ 切换  ·  ⌘I 详情  ·  \(escapeHint)")
+                Text("↑↓ 选择  ·  空格 详情  ·  ↩ 粘贴  ·  ←→ 切换  ·  \(escapeHint)")
                     .lineLimit(1)
                     .minimumScaleFactor(0.86)
             }

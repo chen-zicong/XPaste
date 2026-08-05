@@ -48,6 +48,18 @@ final class PanelNavigationPolicyTests: XCTestCase {
         ))
     }
 
+    func testSpaceTogglesDetailsWithoutBreakingSearchOrTextEditing() {
+        XCTAssertTrue(allowsDetailToggle())
+        XCTAssertTrue(allowsDetailToggle(isTextInputActive: true, searchIsEmpty: true))
+
+        XCTAssertFalse(allowsDetailToggle(isListPage: false))
+        XCTAssertFalse(allowsDetailToggle(hasSelection: false))
+        XCTAssertFalse(allowsDetailToggle(hasDisallowedModifiers: true))
+        XCTAssertFalse(allowsDetailToggle(isEditingBody: true))
+        XCTAssertFalse(allowsDetailToggle(isTextInputActive: true, searchIsEmpty: false))
+        XCTAssertFalse(allowsDetailToggle(hasMarkedText: true))
+    }
+
     private func destination(
         page: PanelPage,
         direction: PanelHorizontalDirection,
@@ -61,6 +73,27 @@ final class PanelNavigationPolicyTests: XCTestCase {
             direction: direction,
             hasDisallowedModifiers: hasDisallowedModifiers,
             isEditingBody: isEditingBody,
+            searchIsEmpty: searchIsEmpty,
+            hasMarkedText: hasMarkedText
+        )
+    }
+
+
+    private func allowsDetailToggle(
+        isListPage: Bool = true,
+        hasSelection: Bool = true,
+        hasDisallowedModifiers: Bool = false,
+        isEditingBody: Bool = false,
+        isTextInputActive: Bool = false,
+        searchIsEmpty: Bool = true,
+        hasMarkedText: Bool = false
+    ) -> Bool {
+        PanelNavigationPolicy.allowsDetailToggle(
+            isListPage: isListPage,
+            hasSelection: hasSelection,
+            hasDisallowedModifiers: hasDisallowedModifiers,
+            isEditingBody: isEditingBody,
+            isTextInputActive: isTextInputActive,
             searchIsEmpty: searchIsEmpty,
             hasMarkedText: hasMarkedText
         )

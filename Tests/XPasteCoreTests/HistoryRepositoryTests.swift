@@ -65,6 +65,72 @@ final class HistoryRepositoryTests: XCTestCase {
         XCTAssertNotNil(upgraded.fileBookmarks.first ?? nil)
     }
 
+    func testFileResolutionReportsEachFailureAndKeepsValidFilesPasteable() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let validURL = directory.appendingPathComponent("available.txt")
+        try Data("available".utf8).write(to: validURL)
+        let missingURL = directory.appendingPathComponent("deleted.txt")
+        let detachedURL = URL(fileURLWithPath: "/Volumes/XPaste-Detached-\(UUID().uuidString)/archive.zip")
+        let paths = [validURL.path, missingURL.path, detachedURL.path]
+        let bookmark = try validURL.bookmarkData(
+            options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+            includingResourceValuesForKeys: [.fileResourceIdentifierKey],
+            relativeTo: nil
+        )
+        let repository = HistoryRepository(baseURL: directory.appendingPathComponent("History"))
+        _ = try await repository.load()
+        let state = try await repository.record(
+            CapturePayload(
+                kind: .files,
+                filePaths: paths,
+                fileBookmarks: [bookmark, nil, nil],
+                contentHash: ContentHasher.files(paths)
+            ),
+            maxItems: 10
+        )
+        let itemID = try XCTUnwrap(state.items.first?.id)
+
+        let report = try await repository.resolveFileReferences(id: itemID)
+        XCTAssertEqual(report.availableURLs, [validURL.standardizedFileURL])
+        XCTAssertEqual(report.unavailableCount, 2)
+        XCTAssertEqual(report.entries.map(\.availability), [.available, .missing, .volumeUnavailable])
+    }
+
+    func testReplacingMissingFileReferenceUpdatesPathBookmarkAndResolution() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let missingURL = directory.appendingPathComponent("old-name.pdf")
+        let replacementURL = directory.appendingPathComponent("new-name.pdf")
+        try Data("replacement".utf8).write(to: replacementURL)
+        let repository = HistoryRepository(baseURL: directory.appendingPathComponent("History"))
+        _ = try await repository.load()
+        let state = try await repository.record(
+            CapturePayload(
+                kind: .files,
+                filePaths: [missingURL.path],
+                contentHash: ContentHasher.files([missingURL.path])
+            ),
+            maxItems: 10
+        )
+        let itemID = try XCTUnwrap(state.items.first?.id)
+
+        let updatedState = try await repository.replaceFileReference(
+            id: itemID,
+            index: 0,
+            with: replacementURL
+        )
+        let updated = try XCTUnwrap(updatedState.items.first { $0.id == itemID })
+        XCTAssertEqual(updated.filePaths, [replacementURL.path])
+        XCTAssertTrue(updated.hasRestorableFileBookmarks)
+
+        let report = try await repository.resolveFileReferences(id: itemID)
+        XCTAssertEqual(report.availableURLs, [replacementURL.standardizedFileURL])
+        XCTAssertEqual(report.entries.map(\.availability), [.available])
+    }
+
     func testVersionTwoDatabaseMigratesFileBookmarkColumnWithoutLosingRecords() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

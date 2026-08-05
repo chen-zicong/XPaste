@@ -200,7 +200,19 @@ final class AppEnvironment {
                 content = .text(item.text ?? "")
             case .files:
                 do {
-                    content = .files(try await repository.resolveFileURLs(id: item.id))
+                    let report = try await repository.resolveFileReferences(id: item.id)
+                    guard !report.availableURLs.isEmpty else {
+                        if report.entries.contains(where: { $0.availability == .authorizationRequired }) {
+                            model.errorMessage = HistoryRepositoryError.fileAuthorizationRequired.localizedDescription
+                        } else {
+                            model.errorMessage = HistoryRepositoryError.fileReferenceUnavailable.localizedDescription
+                        }
+                        return
+                    }
+                    if report.unavailableCount > 0 {
+                        model.showToast("已跳过 \(report.unavailableCount) 个不可用文件")
+                    }
+                    content = .files(report.availableURLs)
                 } catch {
                     model.errorMessage = error.localizedDescription
                     return

@@ -141,6 +141,10 @@ final class AppModel {
         copy(item, autoPaste: true)
     }
 
+    func select(_ item: ClipboardItem) {
+        selectedID = item.id
+    }
+
     func showDetails(for item: ClipboardItem? = nil) {
         if let item { selectedID = item.id }
         guard page != .statistics else { return }
@@ -148,7 +152,7 @@ final class AppModel {
     }
 
     func toggleDetails() {
-        guard page != .statistics else { return }
+        guard page != .statistics, selectedItem != nil else { return }
         isDetailVisible.toggle()
     }
 
@@ -354,6 +358,30 @@ final class AppModel {
     func assetURL(for item: ClipboardItem, thumbnail: Bool = false) -> URL? {
         let fileName = thumbnail ? item.thumbnailFileName : item.imageFileName
         return fileName.map(repository.assetURL(fileName:))
+    }
+
+    func fileResolutionReport(for item: ClipboardItem) async -> FileResolutionReport? {
+        guard item.kind == .files else { return nil }
+        do {
+            let report = try await repository.resolveFileReferences(id: item.id)
+            apply(try await repository.load())
+            return report
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func replaceFileReference(itemID: UUID, index: Int, with URL: URL) async -> Bool {
+        do {
+            apply(try await repository.replaceFileReference(id: itemID, index: index, with: URL))
+            selectedID = itemID
+            showToast("文件引用已更新")
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     func showToast(_ message: String, duration: Double = 2.2) {

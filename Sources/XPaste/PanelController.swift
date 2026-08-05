@@ -508,6 +508,19 @@ final class PanelController: NSObject, NSWindowDelegate {
         )
         if allowsVerticalSelection, event.keyCode == 125 { model.selectNext(offset: 1); return true }
         if allowsVerticalSelection, event.keyCode == 126 { model.selectNext(offset: -1); return true }
+        if event.keyCode == 49,
+           PanelNavigationPolicy.allowsDetailToggle(
+               isListPage: isListPage,
+               hasSelection: model.selectedItem != nil,
+               hasDisallowedModifiers: hasNavigationModifiers,
+               isEditingBody: editingBody,
+               isTextInputActive: textInputActive,
+               searchIsEmpty: model.query.isEmpty,
+               hasMarkedText: hasMarkedText
+           ) {
+            model.toggleDetails()
+            return true
+        }
         if isListPage, !editingBody, !hasMarkedText, event.keyCode == 36 {
             model.copySelected(autoPaste: true)
             return true

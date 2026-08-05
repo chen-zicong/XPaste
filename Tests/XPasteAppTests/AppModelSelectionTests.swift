@@ -5,6 +5,43 @@ import XPasteCore
 
 @MainActor
 final class AppModelSelectionTests: XCTestCase {
+    func testSelectionDoesNotPasteUntilExplicitPasteAction() async throws {
+        let fixture = try SelectionTestFixture()
+        defer { fixture.cleanUp() }
+        let repository = HistoryRepository(baseURL: fixture.directory)
+        _ = try await repository.load()
+        var state = try await record("older", at: 100, in: repository)
+        let older = try XCTUnwrap(state.items.first)
+        state = try await record("newer", at: 200, in: repository)
+        let newer = try XCTUnwrap(state.items.first)
+        let model = AppModel(settings: AppSettings(defaults: fixture.defaults), repository: repository)
+        await model.start()
+        var pastedItemID: UUID?
+        model.onCopyRequest = { item, autoPaste in
+            if autoPaste { pastedItemID = item.id }
+        }
+
+        model.select(older)
+        XCTAssertEqual(model.selectedID, older.id)
+        XCTAssertNil(pastedItemID)
+
+        model.paste(newer)
+        XCTAssertEqual(model.selectedID, newer.id)
+        XCTAssertEqual(pastedItemID, newer.id)
+    }
+
+    func testDetailsCannotOpenWithoutASelectedItem() async throws {
+        let fixture = try SelectionTestFixture()
+        defer { fixture.cleanUp() }
+        let repository = HistoryRepository(baseURL: fixture.directory)
+        let model = AppModel(settings: AppSettings(defaults: fixture.defaults), repository: repository)
+        await model.start()
+
+        model.toggleDetails()
+
+        XCTAssertFalse(model.isDetailVisible)
+    }
+
     func testPageSwitchSelectsFirstItemAndAlwaysRequestsReveal() async throws {
         let fixture = try SelectionTestFixture()
         defer { fixture.cleanUp() }

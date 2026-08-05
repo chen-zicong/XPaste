@@ -108,7 +108,10 @@ struct SettingsView: View {
             Toggle("仅复制后关闭面板", isOn: $settings.closeAfterCopy)
         }
         Section("快速粘贴") {
-            Label("单击历史条目或按 Return，会直接粘贴到唤起前的应用。", systemImage: "return")
+            Label("双击历史条目、点右侧粘贴按钮或按 Return，会粘贴到唤起前的应用。", systemImage: "return")
+            Text("单击只选择条目；按空格可展开或收起详情。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text("首次使用会请求辅助功能权限；拒绝授权时仍会把内容复制到剪贴板。")
                 .font(.caption)
                 .foregroundStyle(.secondary)

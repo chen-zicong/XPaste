@@ -101,42 +101,44 @@ private struct ClipboardRow: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            Button {
-                model.paste(item)
-            } label: {
-                HStack(spacing: 10) {
-                    ItemThumbnail(model: model, item: item, size: thumbnailSize)
+            HStack(spacing: 10) {
+                ItemThumbnail(model: model, item: item, size: thumbnailSize)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        rowContent
-                        HStack(spacing: 5) {
-                            SourceAppBadge(bundleIdentifier: item.sourceAppBundleIdentifier)
-                            if let usageTimestampLabel {
-                                Text("\(usageTimestampLabel)使用")
-                                    .help("最近使用于 \(fullUsageTimestamp)")
-                                    .accessibilityLabel("最近使用于 \(fullUsageTimestamp)")
-                                Text("·")
-                            }
-                            Text(timestampLabel)
-                                .help("记录于 \(fullTimestamp)")
-                                .accessibilityLabel("\(timestampLabel)；记录于 \(fullTimestamp)")
-                            if item.kind != .text {
-                                Text("·")
-                                Text(ByteCountFormatter.string(fromByteCount: Int64(item.storageBytes), countStyle: .file))
-                            }
+                VStack(alignment: .leading, spacing: 4) {
+                    rowContent
+                    HStack(spacing: 5) {
+                        SourceAppBadge(bundleIdentifier: item.sourceAppBundleIdentifier)
+                        if let usageTimestampLabel {
+                            Text("\(usageTimestampLabel)使用")
+                                .help("最近使用于 \(fullUsageTimestamp)")
+                                .accessibilityLabel("最近使用于 \(fullUsageTimestamp)")
+                            Text("·")
                         }
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        Text(timestampLabel)
+                            .help("记录于 \(fullTimestamp)")
+                            .accessibilityLabel("\(timestampLabel)；记录于 \(fullTimestamp)")
+                        if item.kind != .text {
+                            Text("·")
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(item.storageBytes), countStyle: .file))
+                        }
                     }
-
-                    Spacer(minLength: 4)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
                 }
+
+                Spacer(minLength: 4)
             }
-            .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .accessibilityLabel("粘贴到原应用：\(item.kind.displayName)，\(item.title)")
+            .onTapGesture(count: 2) { model.paste(item) }
+            .onTapGesture(count: 1) { model.select(item) }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("选择：\(item.kind.displayName)，\(item.title)")
             .accessibilityValue("\(item.previewText)，\(timestampLabel)，记录于 \(fullTimestamp)")
+            .accessibilityAction { model.select(item) }
+            .accessibilityAction(named: Text("粘贴到原应用")) {
+                model.paste(item)
+            }
             .accessibilityAction(named: Text("仅复制")) {
                 model.copy(item, autoPaste: false)
             }
@@ -148,6 +150,15 @@ private struct ClipboardRow: View {
             }
 
             HStack(spacing: 4) {
+                Button { model.paste(item) } label: {
+                    Image(systemName: "return")
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 24, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("粘贴到原应用（Return / 双击）")
+                .accessibilityLabel("粘贴到原应用")
+
                 Button { model.toggleFavorite(item) } label: {
                     Image(systemName: item.isFavorite ? "star.fill" : "star")
                         .foregroundStyle(item.isFavorite ? .yellow : .secondary)
@@ -169,13 +180,13 @@ private struct ClipboardRow: View {
                 .opacity(showsDetailAction ? 1 : 0)
                 .allowsHitTesting(showsDetailAction)
                 .accessibilityHidden(!showsDetailAction)
-                .help("显示详情（⌘I）")
+                .help("显示详情（空格 / ⌘I）")
                 .accessibilityLabel("显示详情")
             }
             // Keep the trailing action width reserved at all times. Otherwise
             // selecting a long text item inserts two buttons, narrows its text
             // column and makes the row jump from one line to two.
-            .frame(width: 56, alignment: .trailing)
+            .frame(width: 84, alignment: .trailing)
         }
         .padding(.horizontal, 9)
         .padding(.vertical, item.kind == .text ? 7 : 8)

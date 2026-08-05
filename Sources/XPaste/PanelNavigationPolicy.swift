@@ -32,4 +32,21 @@ enum PanelNavigationPolicy {
     ) -> Bool {
         isListPage && !hasDisallowedModifiers && !isEditingBody && !hasMarkedText
     }
+
+    static func allowsDetailToggle(
+        isListPage: Bool,
+        hasSelection: Bool,
+        hasDisallowedModifiers: Bool,
+        isEditingBody: Bool,
+        isTextInputActive: Bool,
+        searchIsEmpty: Bool,
+        hasMarkedText: Bool
+    ) -> Bool {
+        isListPage
+            && hasSelection
+            && !hasDisallowedModifiers
+            && !isEditingBody
+            && !hasMarkedText
+            && (!isTextInputActive || searchIsEmpty)
+    }
 }

@@ -432,17 +432,17 @@ public actor HistoryRepository {
         return state()
     }
 
-    /// Resolves persistent file bookmarks immediately before publishing them
-    /// back to the system pasteboard. Legacy path-only records are migrated on
-    /// first use when macOS still permits XPaste to create a scoped bookmark.
-    public func resolveFileURLs(id: UUID) throws -> [URL] {
+    /// Resolves every persistent file bookmark independently. Valid references
+    /// remain usable even when another file from the same clipboard entry was
+    /// deleted or belongs to a disconnected external volume.
+    public func resolveFileReferences(id: UUID) throws -> FileResolutionReport {
         try ensureLoaded()
         let database = try requireDatabase()
         guard let current = try item(id: id, in: database), current.kind == .files else {
             throw HistoryRepositoryError.fileReferenceUnavailable
         }
 
-        var resolvedURLs: [URL] = []
+        var entries: [ResolvedFileReference] = []
         var bookmarks = current.fileBookmarks
         if bookmarks.count < current.filePaths.count {
             bookmarks.append(contentsOf: repeatElement(nil, count: current.filePaths.count - bookmarks.count))
@@ -450,47 +450,82 @@ public actor HistoryRepository {
             bookmarks = Array(bookmarks.prefix(current.filePaths.count))
         }
         var didChange = bookmarks != current.fileBookmarks
+        var updatedPaths = current.filePaths
 
         for index in current.filePaths.indices {
             let originalURL = URL(fileURLWithPath: current.filePaths[index]).standardizedFileURL
-            var resolvedURL: URL
+            var candidateURL = originalURL
             var bookmarkIsStale = false
+            var bookmarkFailed = false
 
             if let bookmark = bookmarks[index] {
                 do {
-                    resolvedURL = try URL(
+                    candidateURL = try URL(
                         resolvingBookmarkData: bookmark,
                         options: [.withSecurityScope],
                         relativeTo: nil,
                         bookmarkDataIsStale: &bookmarkIsStale
                     ).standardizedFileURL
                 } catch {
-                    bookmarks[index] = nil
-                    didChange = true
-                    resolvedURL = originalURL
+                    bookmarkFailed = true
                 }
-            } else {
-                resolvedURL = originalURL
             }
 
-            guard fileManager.fileExists(atPath: resolvedURL.path),
-                  fileManager.isReadableFile(atPath: resolvedURL.path) else {
-                throw HistoryRepositoryError.fileReferenceUnavailable
+            if !fileManager.fileExists(atPath: candidateURL.path),
+               candidateURL.path != originalURL.path,
+               fileManager.fileExists(atPath: originalURL.path) {
+                candidateURL = originalURL
+                bookmarkIsStale = true
+            }
+            let startedAccess = candidateURL.startAccessingSecurityScopedResource()
+            defer { if startedAccess { candidateURL.stopAccessingSecurityScopedResource() } }
+
+            guard fileManager.fileExists(atPath: candidateURL.path) else {
+                entries.append(ResolvedFileReference(
+                    index: index,
+                    storedPath: current.filePaths[index],
+                    resolvedURL: nil,
+                    availability: unavailableFileAvailability(for: candidateURL)
+                ))
+                continue
+            }
+            guard fileManager.isReadableFile(atPath: candidateURL.path) else {
+                entries.append(ResolvedFileReference(
+                    index: index,
+                    storedPath: current.filePaths[index],
+                    resolvedURL: nil,
+                    availability: .authorizationRequired
+                ))
+                continue
             }
 
-            if bookmarks[index] == nil || bookmarkIsStale {
+            if bookmarks[index] == nil || bookmarkIsStale || bookmarkFailed {
                 do {
-                    bookmarks[index] = try makeFileBookmark(for: resolvedURL)
+                    bookmarks[index] = try makeFileBookmark(for: candidateURL)
                     didChange = true
                 } catch {
-                    throw HistoryRepositoryError.fileAuthorizationRequired
+                    entries.append(ResolvedFileReference(
+                        index: index,
+                        storedPath: current.filePaths[index],
+                        resolvedURL: nil,
+                        availability: .authorizationRequired
+                    ))
+                    continue
                 }
             }
-            resolvedURLs.append(resolvedURL)
+            if updatedPaths[index] != candidateURL.path {
+                updatedPaths[index] = candidateURL.path
+                didChange = true
+            }
+            entries.append(ResolvedFileReference(
+                index: index,
+                storedPath: updatedPaths[index],
+                resolvedURL: candidateURL,
+                availability: .available
+            ))
         }
 
         if didChange {
-            let paths = resolvedURLs.map(\.path)
             try database.execute(
                 """
                 UPDATE items
@@ -498,17 +533,72 @@ public actor HistoryRepository {
                 WHERE id = ? AND kind = ?
                 """,
                 bindings: [
-                    .text(encodePaths(paths)),
+                    .text(encodePaths(updatedPaths)),
                     .blob(try encodeBookmarks(bookmarks)),
-                    .text(ContentHasher.files(paths)),
-                    .integer(Int64(paths.reduce(0) { $0 + $1.utf8.count })),
+                    .text(ContentHasher.files(updatedPaths)),
+                    .integer(Int64(updatedPaths.reduce(0) { $0 + $1.utf8.count })),
                     .text(id.uuidString),
                     .text(ClipboardKind.files.rawValue)
                 ]
             )
             try refreshHistory(from: database)
         }
-        return resolvedURLs
+        return FileResolutionReport(entries: entries)
+    }
+
+    public func resolveFileURLs(id: UUID) throws -> [URL] {
+        let report = try resolveFileReferences(id: id)
+        guard report.unavailableCount == 0, !report.availableURLs.isEmpty else {
+            if report.entries.contains(where: { $0.availability == .authorizationRequired }) {
+                throw HistoryRepositoryError.fileAuthorizationRequired
+            }
+            throw HistoryRepositoryError.fileReferenceUnavailable
+        }
+        return report.availableURLs
+    }
+
+    public func replaceFileReference(id: UUID, index: Int, with URL: URL) throws -> RepositoryState {
+        try ensureLoaded()
+        let database = try requireDatabase()
+        guard let current = try item(id: id, in: database),
+              current.kind == .files,
+              current.filePaths.indices.contains(index) else {
+            throw HistoryRepositoryError.fileReferenceUnavailable
+        }
+        let resolvedURL = URL.standardizedFileURL
+        let startedAccess = resolvedURL.startAccessingSecurityScopedResource()
+        defer { if startedAccess { resolvedURL.stopAccessingSecurityScopedResource() } }
+        guard fileManager.fileExists(atPath: resolvedURL.path),
+              fileManager.isReadableFile(atPath: resolvedURL.path) else {
+            throw HistoryRepositoryError.fileReferenceUnavailable
+        }
+
+        var paths = current.filePaths
+        var bookmarks = current.fileBookmarks
+        if bookmarks.count < paths.count {
+            bookmarks.append(contentsOf: repeatElement(nil, count: paths.count - bookmarks.count))
+        } else if bookmarks.count > paths.count {
+            bookmarks = Array(bookmarks.prefix(paths.count))
+        }
+        paths[index] = resolvedURL.path
+        bookmarks[index] = try makeFileBookmark(for: resolvedURL)
+        try database.execute(
+            """
+            UPDATE items
+            SET file_paths = ?, file_bookmarks = ?, content_hash = ?, content_bytes = ?
+            WHERE id = ? AND kind = ?
+            """,
+            bindings: [
+                .text(encodePaths(paths)),
+                .blob(try encodeBookmarks(bookmarks)),
+                .text(ContentHasher.files(paths)),
+                .integer(Int64(paths.reduce(0) { $0 + $1.utf8.count })),
+                .text(id.uuidString),
+                .text(ClipboardKind.files.rawValue)
+            ]
+        )
+        try refreshHistory(from: database)
+        return state()
     }
 
     public func updateText(id: UUID, text: String) throws -> RepositoryState {
@@ -716,6 +806,14 @@ public actor HistoryRepository {
             includingResourceValuesForKeys: [.fileResourceIdentifierKey],
             relativeTo: nil
         )
+    }
+
+    private func unavailableFileAvailability(for URL: URL) -> FileReferenceAvailability {
+        let components = URL.standardizedFileURL.pathComponents
+        guard components.count >= 3, components[1] == "Volumes" else { return .missing }
+        let volumeRoot = Foundation.URL(fileURLWithPath: "/Volumes", isDirectory: true)
+            .appendingPathComponent(components[2], isDirectory: true)
+        return fileManager.fileExists(atPath: volumeRoot.path) ? .missing : .volumeUnavailable
     }
 
     private func encodePaths(_ paths: [String]) -> String {
