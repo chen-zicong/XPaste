@@ -21,6 +21,7 @@ final class AppEnvironment {
     let isUITest: Bool
     let isIntegrationTest: Bool
     let dataURL: URL
+    private let finderImageExporter: FinderImageExporter
 
     private(set) var panelController: PanelController?
     private var panelReleaseTask: Task<Void, Never>?
@@ -47,6 +48,7 @@ final class AppEnvironment {
             settings = AppSettings()
         }
         repository = HistoryRepository(baseURL: dataURL)
+        finderImageExporter = FinderImageExporter(baseURL: dataURL)
         model = AppModel(settings: settings, repository: repository)
         if isUITest, ProcessInfo.processInfo.arguments.contains("--ui-test-stats") {
             model.page = .statistics
@@ -223,6 +225,28 @@ final class AppEnvironment {
                     return
                 }
                 let url = repository.assetURL(fileName: fileName)
+                let targetBundleIdentifier = request.targetApplicationPID.flatMap {
+                    NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
+                }
+                if ImagePastePolicy.shouldPublishAsFile(
+                    targetBundleIdentifier: targetBundleIdentifier
+                ) {
+                    do {
+                        let exportURL = try await finderImageExporter.export(
+                            sourceURL: url,
+                            capturedAt: item.createdAt
+                        )
+                        content = .files([exportURL])
+                    } catch {
+                        if !Task.isCancelled,
+                           activePublishID == publishID,
+                           panelController.isCurrent(request) {
+                            model.errorMessage = "无法创建供 Finder 粘贴的图片文件"
+                        }
+                        return
+                    }
+                    break
+                }
                 guard let data = try? await Task.detached(priority: .userInitiated, operation: {
                     try Data(contentsOf: url, options: .mappedIfSafe)
                 }).value else {
