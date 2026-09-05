@@ -37,7 +37,13 @@ final class AppModel {
 
     var items: [ClipboardItem] = []
     private(set) var visibleItems: [ClipboardItem] = []
-    var selectedID: UUID?
+    var selectedID: UUID? {
+        didSet {
+            if oldValue != selectedID { isPreviewEditing = false }
+            if selectedID == nil { isDetailVisible = false }
+        }
+    }
+    var isPreviewEditing = false
     private(set) var selectionRevealToken = UUID()
     var query = "" { didSet { scheduleVisibleRefresh() } }
     var filter: ClipboardFilter = .all { didSet { scheduleVisibleRefresh(debounce: false) } }
@@ -48,12 +54,14 @@ final class AppModel {
                 resetSelection: oldValue != page,
                 revealSelection: page != .statistics
             )
+            if page == .statistics { isDetailVisible = false }
             if oldValue != page { onPanelLayoutChange?(page, isDetailVisible) }
         }
     }
     var isDetailVisible = false {
         didSet {
-            if oldValue != isDetailVisible { onPanelLayoutChange?(page, isDetailVisible) }
+            if !isDetailVisible { isPreviewEditing = false }
+            if oldValue != isDetailVisible { onPreviewVisibilityChange?() }
         }
     }
     var isPanelPinned = false {
@@ -79,6 +87,7 @@ final class AppModel {
     @ObservationIgnored var onHideRequest: (() -> Void)?
     @ObservationIgnored var onShowSettingsRequest: (() -> Void)?
     @ObservationIgnored var onPanelLayoutChange: ((PanelPage, Bool) -> Void)?
+    @ObservationIgnored var onPreviewVisibilityChange: (() -> Void)?
     @ObservationIgnored var onPanelPinChange: ((Bool) -> Void)?
 
     @ObservationIgnored private let imageQueue = ImageProcessingQueue()
@@ -147,7 +156,7 @@ final class AppModel {
 
     func showDetails(for item: ClipboardItem? = nil) {
         if let item { selectedID = item.id }
-        guard page != .statistics else { return }
+        guard page != .statistics, selectedItem != nil else { return }
         isDetailVisible = true
     }
 
@@ -158,7 +167,6 @@ final class AppModel {
 
     func togglePanelPinned() {
         isPanelPinned.toggle()
-        showToast(isPanelPinned ? "窗口已固定" : "已取消固定")
     }
 
     func selectNext(offset: Int) {
@@ -244,7 +252,6 @@ final class AppModel {
         Task {
             do {
                 apply(try await repository.setFavorite(id: item.id, value: !item.isFavorite))
-                showToast(item.isFavorite ? "已取消收藏" : "已收藏")
             } catch { errorMessage = error.localizedDescription }
         }
     }
@@ -255,7 +262,7 @@ final class AppModel {
             do {
                 apply(try await repository.updateText(id: id, text: text))
                 textDrafts[id] = nil
-                showToast("编辑已保存")
+                if selectedID == id { isPreviewEditing = false }
             } catch { errorMessage = error.localizedDescription }
         }
     }
@@ -333,6 +340,10 @@ final class AppModel {
     }
 
     func copy(_ item: ClipboardItem, autoPaste: Bool) {
+        if isPreviewEditing, selectedID == item.id, draftText(for: item) != (item.text ?? "") {
+            showToast("请先保存编辑，再复制或粘贴")
+            return
+        }
         onCopyRequest?(item, autoPaste)
     }
 

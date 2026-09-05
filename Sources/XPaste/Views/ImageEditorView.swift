@@ -23,16 +23,18 @@ struct ImageEditorView: View {
                 }
                 Spacer()
                 Button("取消") { dismiss() }
+                    .buttonStyle(PanelToolbarButtonStyle())
                 Button("保存") { save() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PanelToolbarButtonStyle(isProminent: true))
                     .disabled(operations.isEmpty || isSaving || isRendering)
             }
-            .padding(16)
+            .padding(.horizontal, PanelTheme.contentInset)
+            .padding(.vertical, 16)
 
-            Divider()
+            PanelSeparator()
 
             ZStack {
-                Color(nsColor: .windowBackgroundColor)
+                ImagePreviewCanvas()
                 if let previewImage {
                     Image(nsImage: previewImage)
                         .resizable()
@@ -46,7 +48,7 @@ struct ImageEditorView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider()
+            PanelSeparator()
 
             HStack(spacing: 10) {
                 EditButton(title: "左转", icon: "rotate.left") { add(.rotateLeft) }
@@ -70,10 +72,13 @@ struct ImageEditorView: View {
                 }
                 if isRendering || isSaving { ProgressView().controlSize(.small) }
             }
-            .buttonStyle(.bordered)
-            .padding(14)
+            .buttonStyle(PanelToolbarButtonStyle())
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
         .frame(width: 720, height: 530)
+        .background(PanelTheme.canvas)
+        .tint(PanelTheme.accent)
         .task { load() }
     }
 

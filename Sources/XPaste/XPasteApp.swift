@@ -29,12 +29,6 @@ struct XPasteApp: App {
         }
         .menuBarExtraStyle(.menu)
 
-        Settings {
-            SettingsView(
-                model: environment.model,
-                accessibilityPermission: environment.accessibilityPermission
-            )
-        }
     }
 }
 

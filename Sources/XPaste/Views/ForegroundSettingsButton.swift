@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 
 struct ForegroundSettingsButton<Label: View>: View {
-    @Environment(\.openSettings) private var openSettings
     private let beforeOpen: () -> Void
     private let label: () -> Label
 
@@ -22,15 +21,10 @@ struct ForegroundSettingsButton<Label: View>: View {
 
     private func showSettings() {
         beforeOpen()
-        openSettings()
-
         // MenuBarExtra actions finish on the current AppKit tracking turn.
-        // Activating on the next turn prevents the previous app reclaiming focus.
+        // Present after tracking ends so menu dismissal cannot reclaim focus.
         DispatchQueue.main.async {
-            NSRunningApplication.current.activate(options: [.activateAllWindows])
-            NSApp.windows
-                .first(where: { $0.isVisible && $0.canBecomeKey && !($0 is NSPanel) })?
-                .makeKeyAndOrderFront(nil)
+            AppEnvironment.shared.showSettings()
         }
     }
 }

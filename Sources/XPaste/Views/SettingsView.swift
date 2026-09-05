@@ -42,32 +42,27 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
+            HStack(spacing: 4) {
                 ForEach(SettingsTab.allCases) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9)
-                                .fill(selectedTab == tab ? Color.accentColor.opacity(0.14) : .clear)
-                                .padding(.horizontal, 2.5)
-                            VStack(spacing: 4) {
-                                Image(systemName: tab.icon).font(.system(size: 17))
-                                Text(tab.title).font(.caption)
-                            }
+                        VStack(spacing: 4) {
+                            Image(systemName: tab.icon).font(.system(size: 16, weight: .medium))
+                            Text(tab.title).font(.system(size: 11, weight: .medium))
                         }
                         .frame(width: 76, height: 48)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.primary)
+                    .buttonStyle(PanelScopeButtonStyle(isSelected: selectedTab == tab))
                     .accessibilityLabel("\(tab.title)设置")
                     .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
                 }
             }
-            .padding(10)
+            .padding(8)
+            .modifier(PanelGlassSurface())
+            .padding(.vertical, 16)
 
-            Divider()
+            PanelSeparator().padding(.horizontal, PanelTheme.contentInset)
 
             Form {
                 switch selectedTab {
@@ -81,6 +76,8 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
         }
         .frame(width: 560, height: 430)
+        .background(PanelTheme.canvas)
+        .tint(PanelTheme.accent)
         .alert("无法更新登录项", isPresented: Binding(
             get: { serviceError != nil },
             set: { if !$0 { serviceError = nil } }
@@ -108,7 +105,7 @@ struct SettingsView: View {
             Toggle("仅复制后关闭面板", isOn: $settings.closeAfterCopy)
         }
         Section("快速粘贴") {
-            Label("双击历史条目、点右侧粘贴按钮或按 Return，会粘贴到唤起前的应用。", systemImage: "return")
+            Label("双击历史条目、在明细中点粘贴或按 Return，会粘贴到唤起前的应用。", systemImage: "return")
             Text("单击只选择条目；按空格可展开或收起详情。")
                 .font(.caption)
                 .foregroundStyle(.secondary)

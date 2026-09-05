@@ -9,25 +9,15 @@ struct StatisticsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("存储与占用")
-                            .font(.title2.weight(.semibold))
-                        Text("统计仅包含 XPaste 自身数据；文件引用不会计算原文件体积。")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button { model.show(page: .history) } label: {
-                        Label("返回历史", systemImage: "arrow.left")
-                    }
-                }
+                Text("了解历史记录的存储与占用；文件引用不计入原文件体积。")
+                    .font(PanelTheme.bodyFont)
+                    .foregroundStyle(.secondary)
 
                 HStack(spacing: 12) {
-                    MetricCard(title: "应用数据", value: bytes(model.stats.totalBytes), icon: "internaldrive", tint: .indigo)
-                    MetricCard(title: "历史条目", value: "\(model.stats.totalItems)", icon: "clock", tint: .blue)
-                    MetricCard(title: "收藏", value: "\(model.stats.favoriteItems)", icon: "star.fill", tint: .yellow)
-                    MetricCard(title: "当前内存", value: bytes(residentMemory()), icon: "memorychip", tint: .green)
+                    MetricCard(title: "应用数据", value: bytes(model.stats.totalBytes), icon: "internaldrive", tint: PanelTheme.accent)
+                    MetricCard(title: "历史条目", value: "\(model.stats.totalItems)", icon: "clock", tint: PanelTheme.accent)
+                    MetricCard(title: "收藏", value: "\(model.stats.favoriteItems)", icon: "star.fill", tint: PanelTheme.favorite)
+                    MetricCard(title: "当前内存", value: bytes(residentMemory()), icon: "memorychip", tint: .secondary)
                 }
 
                 HStack(alignment: .top, spacing: 14) {
@@ -46,11 +36,12 @@ struct StatisticsView: View {
                     Button("清理…", role: .destructive) { confirmCleanup = true }
                         .disabled(model.items.allSatisfy(\.isFavorite))
                 }
-                .padding(14)
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                .padding(16)
+                .panelSurface()
             }
-            .padding(20)
+            .padding(PanelTheme.contentInset)
         }
+        .background(PanelTheme.canvas)
         .confirmationDialog("清理所有非收藏历史？", isPresented: $confirmCleanup) {
             Button("清理非收藏内容", role: .destructive) { model.clearUnfavorited() }
             Button("取消", role: .cancel) {}
@@ -62,9 +53,9 @@ struct StatisticsView: View {
     private var storageBreakdown: some View {
         VStack(alignment: .leading, spacing: 13) {
             Text("内容构成").font(.headline)
-            StorageBar(label: "图片与缩略图", value: model.stats.imageBytes, total: model.stats.totalBytes, color: .purple, count: model.stats.imageItems)
-            StorageBar(label: "文本", value: model.stats.textBytes, total: model.stats.totalBytes, color: .blue, count: model.stats.textItems)
-            StorageBar(label: "文件引用", value: model.stats.fileReferenceBytes, total: model.stats.totalBytes, color: .orange, count: model.stats.fileItems)
+            StorageBar(label: "图片与缩略图", value: model.stats.imageBytes, total: model.stats.totalBytes, color: PanelTheme.imageTint, count: model.stats.imageItems)
+            StorageBar(label: "文本", value: model.stats.textBytes, total: model.stats.totalBytes, color: PanelTheme.accent, count: model.stats.textItems)
+            StorageBar(label: "文件引用", value: model.stats.fileReferenceBytes, total: model.stats.totalBytes, color: PanelTheme.fileTint, count: model.stats.fileItems)
             StorageBar(label: "SQLite 数据库", value: model.stats.databaseBytes, total: model.stats.totalBytes, color: .gray, count: nil)
             if model.stats.databaseSidecarBytes > 0 {
                 StorageBar(label: "WAL / SHM", value: model.stats.databaseSidecarBytes, total: model.stats.totalBytes, color: .secondary, count: nil)
@@ -73,9 +64,9 @@ struct StatisticsView: View {
                 StorageBar(label: "迁移 / 恢复备份", value: model.stats.archiveBytes, total: model.stats.totalBytes, color: .brown, count: nil)
             }
         }
-        .padding(15)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+        .panelSurface()
     }
 
     private var largestItems: some View {
@@ -96,9 +87,9 @@ struct StatisticsView: View {
                 Text("暂无内容").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(15)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+        .panelSurface()
     }
 
     private func bytes(_ value: Int) -> String {
@@ -128,12 +119,14 @@ private struct MetricCard: View {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(tint)
-            Text(value).font(.title3.weight(.semibold)).monospacedDigit()
+                .frame(width: 32, height: 32)
+                .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+            Text(value).font(.system(size: 24, weight: .semibold)).monospacedDigit()
             Text(title).font(.caption).foregroundStyle(.secondary)
         }
-        .padding(13)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+        .panelSurface()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title)，\(value)")
     }

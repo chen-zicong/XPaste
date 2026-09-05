@@ -24,6 +24,10 @@ final class AppEnvironment {
     private let finderImageExporter: FinderImageExporter
 
     private(set) var panelController: PanelController?
+    private lazy var settingsWindowController = SettingsWindowController(
+        model: model,
+        accessibilityPermission: accessibilityPermission
+    )
     private var panelReleaseTask: Task<Void, Never>?
     private var monitorHandlersReady = false
     private var appliedMaxItems: Int?
@@ -104,6 +108,10 @@ final class AppEnvironment {
 
     func showPanel(page: PanelPage) {
         ensurePanelController().show(page: page)
+    }
+
+    func showSettings() {
+        settingsWindowController.present()
     }
 
     func toggleHistoryPanel() {

@@ -1,6 +1,22 @@
 import Foundation
 
 public enum ClipboardTimestampFormatter {
+    /// A compact two-line date keeps older records readable in the fixed list column.
+    public static func listLabel(
+        _ date: Date,
+        relativeTo now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> (primary: String, secondary: String?) {
+        let label = display(date, relativeTo: now, calendar: calendar)
+        guard let separator = label.lastIndex(of: " ") else { return (label, nil) }
+        var dateLabel = String(label[..<separator])
+        if calendar.component(.year, from: date) != calendar.component(.year, from: now) {
+            let components = calendar.dateComponents([.year, .month, .day], from: date)
+            dateLabel = String(format: "%04d/%02d/%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+        }
+        return (dateLabel, String(label[label.index(after: separator)...]))
+    }
+
     public static func display(
         _ date: Date,
         relativeTo now: Date = Date(),

@@ -16,14 +16,17 @@ struct ClipboardListView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 0) {
+                        LazyVStack(spacing: 4) {
                             ForEach(model.visibleItems) { item in
                                 ClipboardRow(model: model, item: item, isSelected: model.selectedID == item.id)
                                     .id(item.id)
                             }
                         }
-                        .padding(6)
+                        .padding(.horizontal, PanelTheme.rowInset)
+                        .padding(.top, 1)
+                        .padding(.bottom, 12)
                     }
+                    .onAppear { reveal(model.selectedID, using: proxy) }
                     .onChange(of: model.selectedID) { _, id in
                         reveal(id, using: proxy)
                     }
@@ -37,7 +40,6 @@ struct ClipboardListView: View {
                 }
             }
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
     }
 
     private func reveal(_ id: UUID?, using proxy: ScrollViewProxy) {
@@ -57,23 +59,28 @@ struct ClipboardListView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             Image(systemName: emptyIcon)
-                .font(.system(size: 31, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text(emptyTitle).font(.headline)
+                .font(.system(size: 24, weight: .light))
+                .foregroundStyle(PanelTheme.accent)
+                .frame(width: 48, height: 48)
+                .background(PanelTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                .padding(.bottom, 4)
+            Text(emptyTitle).font(.headline).lineLimit(2)
             Text(emptySubtitle)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 220)
+                .frame(maxWidth: 240)
+                .fixedSize(horizontal: false, vertical: true)
             if !model.query.isEmpty {
                 Button("清除搜索") { model.query = "" }
             } else if model.page == .favorites {
                 Button("返回历史") { model.show(page: .history) }
             }
         }
-        .padding(24)
+        .buttonStyle(PanelToolbarButtonStyle(isSelected: true))
+        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -97,34 +104,29 @@ private struct ClipboardRow: View {
     let model: AppModel
     let item: ClipboardItem
     let isSelected: Bool
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var hovering = false
     @State private var isTrackingPrimaryPress = false
 
     var body: some View {
         HStack(spacing: 7) {
             HStack(spacing: 10) {
-                ItemThumbnail(model: model, item: item, size: thumbnailSize)
+                ItemThumbnail(model: model, item: item, size: thumbnailSize, isSelected: usesAccentSelection)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     rowContent
                     HStack(spacing: 5) {
-                        SourceAppBadge(bundleIdentifier: item.sourceAppBundleIdentifier)
+                        SourceAppBadge(bundleIdentifier: item.sourceAppBundleIdentifier, showsIcon: false)
+                        Text("·")
+                        Text(item.kind.displayName)
                         if let usageTimestampLabel {
-                            Text("\(usageTimestampLabel)使用")
+                            Text("· \(usageTimestampLabel)使用")
                                 .help("最近使用于 \(fullUsageTimestamp)")
-                                .accessibilityLabel("最近使用于 \(fullUsageTimestamp)")
-                            Text("·")
-                        }
-                        Text(timestampLabel)
-                            .help("记录于 \(fullTimestamp)")
-                            .accessibilityLabel("\(timestampLabel)；记录于 \(fullTimestamp)")
-                        if item.kind != .text {
-                            Text("·")
-                            Text(ByteCountFormatter.string(fromByteCount: Int64(item.storageBytes), countStyle: .file))
                         }
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(secondaryColor)
+                    .lineLimit(1)
                 }
 
                 Spacer(minLength: 4)
@@ -149,19 +151,26 @@ private struct ClipboardRow: View {
                 model.toggleFavorite(item)
             }
 
-            HStack(spacing: 4) {
-                Button { model.paste(item) } label: {
-                    Image(systemName: "return")
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 24, height: 28)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(listTimestamp.primary)
+                if let time = listTimestamp.secondary {
+                    Text(time).foregroundStyle(PanelTheme.muted)
                 }
-                .buttonStyle(.plain)
-                .help("粘贴到原应用（Return / 双击）")
-                .accessibilityLabel("粘贴到原应用")
+            }
+            .font(.system(size: 11))
+            .lineLimit(1)
+            .monospacedDigit()
+            .foregroundStyle(secondaryColor)
+            .fixedSize(horizontal: true, vertical: true)
+            .frame(width: 76, alignment: .trailing)
+            .help("记录于 \(fullTimestamp)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("记录于 \(fullTimestamp)")
 
+            HStack(spacing: 4) {
                 Button { model.toggleFavorite(item) } label: {
                     Image(systemName: item.isFavorite ? "star.fill" : "star")
-                        .foregroundStyle(item.isFavorite ? .yellow : .secondary)
+                        .foregroundStyle(item.isFavorite ? PanelTheme.favorite : secondaryColor)
                         .frame(width: 24, height: 28)
                 }
                 .buttonStyle(.plain)
@@ -171,35 +180,20 @@ private struct ClipboardRow: View {
                 .help(item.isFavorite ? "取消收藏" : "收藏")
                 .accessibilityLabel(item.isFavorite ? "取消收藏" : "收藏")
 
-                Button { model.showDetails(for: item) } label: {
-                    Image(systemName: "info.circle")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 28)
-                }
-                .buttonStyle(.plain)
-                .opacity(showsDetailAction ? 1 : 0)
-                .allowsHitTesting(showsDetailAction)
-                .accessibilityHidden(!showsDetailAction)
-                .help("显示详情（空格 / ⌘I）")
-                .accessibilityLabel("显示详情")
+
             }
             // Keep the trailing action width reserved at all times. Otherwise
-            // selecting a long text item inserts two buttons, narrows its text
+            // selecting a long text item inserts a button, narrows its text
             // column and makes the row jump from one line to two.
-            .frame(width: 84, alignment: .trailing)
+            .frame(width: 28, alignment: .trailing)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, item.kind == .text ? 7 : 8)
-        .frame(minHeight: item.kind == .text ? 48 : 62)
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(alignment: .leading) {
-            if isSelected {
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(width: 3)
-                    .padding(.vertical, 8)
-                    .padding(.leading, 2)
-            }
+        .padding(.horizontal, PanelTheme.rowInset)
+        .padding(.vertical, 8)
+        .frame(height: PanelTheme.rowHeight)
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(isSelected ? (contrast == .increased ? Color.primary.opacity(0.4) : PanelTheme.selectionBorder) : Color.clear)
         }
         .contentShape(Rectangle())
         .simultaneousGesture(
@@ -214,6 +208,8 @@ private struct ClipboardRow: View {
                 }
         )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        // Hover reveals actions without drawing a second, competing selection
+        // or leaving an animated trail when the pointer crosses several rows.
         .onHover { hovering = $0 }
         .contextMenu {
             Button("粘贴到原应用") { model.paste(item) }
@@ -227,40 +223,31 @@ private struct ClipboardRow: View {
         }
     }
 
-    @ViewBuilder
     private var rowContent: some View {
-        if item.kind == .text {
-            Text(textDisplayValue)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .multilineTextAlignment(.leading)
-        } else {
-            Text(item.title)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-            if !item.previewText.isEmpty, item.previewText != item.title {
-                Text(item.previewText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
+        Text(item.kind == .text ? textDisplayValue : item.kind == .files && !item.previewText.isEmpty ? item.previewText : item.title)
+            .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+            .foregroundStyle(PanelTheme.ink)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .multilineTextAlignment(.leading)
+    }
+
+    private var usesAccentSelection: Bool { isSelected }
+
+    private var secondaryColor: Color {
+        PanelTheme.secondary
     }
 
     private var textDisplayValue: String {
-        let preview = item.previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return preview.isEmpty ? item.title : preview
+        item.title
     }
 
     private var thumbnailSize: CGFloat {
-        item.kind == .text ? 30 : 42
+        30
     }
 
     private var rowBackground: Color {
-        if isSelected { return Color.accentColor.opacity(0.11) }
-        if hovering { return Color.primary.opacity(0.028) }
+        if isSelected { return PanelTheme.selection }
         return .clear
     }
 
@@ -268,12 +255,12 @@ private struct ClipboardRow: View {
         item.isFavorite || hovering || isSelected
     }
 
-    private var showsDetailAction: Bool {
-        hovering || isSelected
-    }
-
     private var timestampLabel: String {
         ClipboardTimestampFormatter.display(item.createdAt, relativeTo: model.timestampReferenceDate)
+    }
+
+    private var listTimestamp: (primary: String, secondary: String?) {
+        ClipboardTimestampFormatter.listLabel(item.createdAt, relativeTo: model.timestampReferenceDate)
     }
 
     private var fullTimestamp: String {
@@ -298,12 +285,13 @@ struct ItemThumbnail: View {
     let model: AppModel
     let item: ClipboardItem
     let size: CGFloat
+    var isSelected = false
     @State private var image: NSImage?
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.19, style: .continuous)
-                .fill(backgroundColor)
+                .fill(item.kind == .image ? PanelTheme.chrome : Color.clear)
             if item.kind == .image, let image {
                 Image(nsImage: image)
                     .resizable()
@@ -312,12 +300,11 @@ struct ItemThumbnail: View {
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.19, style: .continuous))
             } else {
                 Image(systemName: symbol)
-                    .font(.system(size: size * 0.38, weight: .medium))
-                    .foregroundStyle(foregroundColor)
+                    .font(.system(size: size * 0.48, weight: .regular))
+                    .foregroundStyle(isSelected ? PanelTheme.accent : PanelTheme.muted)
             }
         }
         .frame(width: size, height: size)
-        .overlay(RoundedRectangle(cornerRadius: size * 0.19).strokeBorder(Color.primary.opacity(0.07)))
         .task(id: item.thumbnailFileName) {
             guard item.kind == .image, let url = model.assetURL(for: item, thumbnail: true) else { return }
             image = await ThumbnailCache.shared.image(at: url)
@@ -328,25 +315,10 @@ struct ItemThumbnail: View {
         switch item.kind {
         case .text: "text.alignleft"
         case .image: "photo"
-        case .files: "doc.on.doc.fill"
+        case .files: "doc.on.doc"
         }
     }
 
-    private var backgroundColor: Color {
-        switch item.kind {
-        case .text: Color.primary.opacity(0.045)
-        case .image: .purple.opacity(0.10)
-        case .files: .orange.opacity(0.12)
-        }
-    }
-
-    private var foregroundColor: Color {
-        switch item.kind {
-        case .text: .secondary
-        case .image: .purple
-        case .files: .orange
-        }
-    }
 }
 
 actor ThumbnailCache {
@@ -371,18 +343,58 @@ actor ThumbnailCache {
     }
 }
 
-private struct SourceAppBadge: View {
+struct SourceAppBadge: View {
     let bundleIdentifier: String?
+    var showsIcon = true
+    @State private var source: SourceApplication?
 
     var body: some View {
-        if let bundleIdentifier, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
-                .resizable()
-                .frame(width: 12, height: 12)
-                .help(bundleIdentifier)
-        } else {
-            Image(systemName: "app")
-                .frame(width: 12, height: 12)
+        HStack(spacing: 4) {
+            if let source {
+                if showsIcon {
+                    Image(nsImage: source.icon)
+                        .resizable()
+                        .frame(width: 12, height: 12)
+                } else {
+                    Circle().fill(PanelTheme.muted.opacity(0.65)).frame(width: 4, height: 4)
+                }
+                Text(source.name)
+                    .lineLimit(1)
+            } else {
+                if showsIcon {
+                    Image(systemName: "app").frame(width: 12, height: 12)
+                } else {
+                    Circle().fill(PanelTheme.muted.opacity(0.65)).frame(width: 4, height: 4)
+                }
+                Text("应用")
+            }
         }
+        .help(source?.name ?? "来源应用")
+        .task(id: bundleIdentifier) {
+            source = SourceApplicationCache.application(for: bundleIdentifier)
+        }
+    }
+}
+
+private struct SourceApplication {
+    let name: String
+    let icon: NSImage
+}
+
+@MainActor
+private enum SourceApplicationCache {
+    private static var applications: [String: SourceApplication] = [:]
+
+    static func application(for bundleIdentifier: String?) -> SourceApplication? {
+        guard let bundleIdentifier else { return nil }
+        if let cached = applications[bundleIdentifier] { return cached }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else { return nil }
+        let application = SourceApplication(
+            name: FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""),
+            icon: NSWorkspace.shared.icon(forFile: url.path)
+        )
+        if applications.count >= 100 { applications.removeAll() }
+        applications[bundleIdentifier] = application
+        return application
     }
 }

@@ -53,6 +53,22 @@ final class ClipboardTimestampFormatterTests: XCTestCase {
         )
     }
 
+    func testListLabelsKeepDateAndTimeWithoutDroppingTheYear() throws {
+        let now = try date(2026, 8, 1, 15, 0, 0)
+        let recent = ClipboardTimestampFormatter.listLabel(now.addingTimeInterval(-59 * 60), relativeTo: now, calendar: calendar)
+        XCTAssertEqual(recent.primary, "59分钟前")
+        XCTAssertNil(recent.secondary)
+        let yesterday = ClipboardTimestampFormatter.listLabel(try date(2026, 7, 31, 14, 20, 0), relativeTo: now, calendar: calendar)
+        XCTAssertEqual(yesterday.primary, "昨天")
+        XCTAssertEqual(yesterday.secondary, "14:20")
+        let earlier = ClipboardTimestampFormatter.listLabel(try date(2026, 6, 18, 9, 5, 0), relativeTo: now, calendar: calendar)
+        XCTAssertEqual(earlier.primary, "6月18日")
+        XCTAssertEqual(earlier.secondary, "09:05")
+        let lastYear = ClipboardTimestampFormatter.listLabel(try date(2025, 12, 31, 23, 4, 0), relativeTo: now, calendar: calendar)
+        XCTAssertEqual(lastYear.primary, "2025/12/31")
+        XCTAssertEqual(lastYear.secondary, "23:04")
+    }
+
     private func display(secondsAgo: TimeInterval, now: Date) -> String {
         ClipboardTimestampFormatter.display(
             now.addingTimeInterval(-secondsAgo),

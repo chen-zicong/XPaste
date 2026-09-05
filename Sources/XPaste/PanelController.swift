@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import QuartzCore
 import SwiftUI
 
 private final class ClipboardPanel: NSPanel {
@@ -21,6 +22,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private let accessibilityPermission: AccessibilityPermissionController
     private let panel: ClipboardPanel
+    private let previewController: ClipboardPreviewController
+    private weak var responderBeforePreview: NSResponder?
+    private var isHiding = false
     private let targetApplicationProvider: () -> pid_t?
     private var localEventMonitor: Any?
     private var isCompletingCopy = false
@@ -42,19 +46,24 @@ final class PanelController: NSObject, NSWindowDelegate {
         self.model = model
         self.accessibilityPermission = accessibilityPermission
         self.targetApplicationProvider = targetApplicationProvider
+        self.previewController = ClipboardPreviewController(model: model)
         self.panel = ClipboardPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 548),
             styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView, .resizable],
             backing: .buffered,
             defer: false
         )
         super.init()
         configurePanel()
+        previewController.onClose = { [weak self] in self?.model.isDetailVisible = false }
+        previewController.onResignKey = { [weak self] in self?.scheduleDismissal() }
         installKeyMonitor()
         installWorkspaceObserver()
         model.onPanelLayoutChange = { [weak self] page, detailVisible in
             self?.updatePanelLayout(page: page, detailVisible: detailVisible, animated: true)
+            self?.syncPreview()
         }
+        model.onPreviewVisibilityChange = { [weak self] in self?.syncPreview() }
         model.onPanelPinChange = { [weak self] isPinned in
             self?.panelPinStateDidChange(isPinned)
         }
@@ -88,6 +97,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.orderFrontRegardless()
         positionOnPointerScreen(ifNeeded: !wasVisible)
         panel.makeKey()
+        syncPreview()
         // Wait one run-loop turn for SwiftUI to attach the field editor, but do
         // not use a delayed second focus request: it could steal focus back
         // after the user had already clicked or started keyboard navigation.
@@ -104,8 +114,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         if invalidateSession {
             invalidateSessionPreservingVisibility()
         }
+        isHiding = true
         hasAcquiredKey = false
+        model.isDetailVisible = false
+        previewController.dismiss()
         panel.orderOut(nil)
+        isHiding = false
         onHidden?()
     }
 
@@ -291,9 +305,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         activeRequestID = nil
         pasteWorkItem = nil
         isCompletingCopy = false
-        if request.keepPanelVisible {
-            model.showToast("已向当前应用发送粘贴")
-        }
         onPasteEventSent?(request.itemID)
     }
 
@@ -313,14 +324,38 @@ final class PanelController: NSObject, NSWindowDelegate {
         hasAcquiredKey = true
     }
 
-    func windowDidResignKey(_ notification: Notification) {
-        if ProcessInfo.processInfo.arguments.contains("--ui-test") { return }
-        guard panel.isVisible, hasAcquiredKey, !model.isPanelPinned,
-              !isCompletingCopy, panel.attachedSheet == nil else { return }
+    func windowDidResignKey(_ notification: Notification) { scheduleDismissal() }
+
+    private var hasAttachedDialog: Bool {
+        panel.attachedSheet != nil || previewController.window?.attachedSheet != nil
+            || NSApp.modalWindow != nil
+    }
+
+    private func scheduleDismissal() {
+        guard panel.isVisible, hasAcquiredKey, !isHiding else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, !self.model.isPanelPinned,
-                  !self.panel.isKeyWindow, self.panel.attachedSheet == nil else { return }
+            guard let self, self.panel.isVisible, !self.isHiding,
+                  !self.model.isPanelPinned, !self.isCompletingCopy,
+                  !self.panel.isKeyWindow, self.previewController.window?.isKeyWindow != true,
+                  !self.hasAttachedDialog else { return }
             self.hide()
+        }
+    }
+
+    private func syncPreview() {
+        guard !isHiding else { return }
+        if model.isDetailVisible, model.page != .statistics, model.selectedItem != nil, panel.isVisible {
+            if !previewController.isPresented {
+                responderBeforePreview = panel.firstResponder
+                previewController.present(above: panel)
+            }
+        } else if previewController.window?.isVisible == true {
+            let restoreFocus = previewController.window?.isKeyWindow == true
+            previewController.dismiss(animated: model.page != .statistics && model.selectedItem != nil)
+            if restoreFocus, panel.isVisible {
+                panel.makeKey()
+                panel.makeFirstResponder(responderBeforePreview)
+            }
         }
     }
 
@@ -352,6 +387,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private func configurePanel() {
         panel.delegate = self
         panel.contentViewController = NSHostingController(rootView: MainPanelView(model: model))
+        panel.setContentSize(NSSize(width: 520, height: 548))
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false
         panel.hidesOnDeactivate = false
@@ -361,11 +397,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         panel.hasShadow = true
         panel.level = .screenSaver
         panel.title = "XPaste"
+        panel.identifier = NSUserInterfaceItemIdentifier("XPaste.History")
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.tabbingMode = .disallowed
         panel.isMovableByWindowBackground = true
-        panel.minSize = NSSize(width: 760, height: 500)
+        panel.minSize = NSSize(width: 440, height: 360)
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
@@ -380,13 +417,13 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     private func updatePanelLayout(page: PanelPage, detailVisible: Bool, animated: Bool) {
-        let expanded = page == .statistics || detailVisible
-        let targetWidth: CGFloat = expanded ? 920 : 620
-        panel.minSize = NSSize(width: expanded ? 760 : 560, height: 500)
+        let expanded = page == .statistics
+        let targetWidth: CGFloat = expanded ? 920 : 520
+        panel.minSize = NSSize(width: expanded ? 760 : 440, height: expanded ? 500 : 360)
 
         let screen = panel.screen ?? NSScreen.main
         let visibleFrame = screen?.visibleFrame
-        let width = min(targetWidth, max(560, (visibleFrame?.width ?? targetWidth) - 32))
+        let width = min(targetWidth, max(440, (visibleFrame?.width ?? targetWidth) - 32))
         guard abs(panel.frame.width - width) > 0.5 else { return }
 
         var frame = panel.frame
@@ -399,7 +436,15 @@ final class PanelController: NSObject, NSWindowDelegate {
                 visibleFrame.maxX - width - 16
             )
         }
-        panel.setFrame(frame, display: panel.isVisible, animate: animated && panel.isVisible)
+        if animated, panel.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = PanelMotion.windowIn
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(frame, display: true)
+            }
+        } else {
+            panel.setFrame(frame, display: panel.isVisible)
+        }
     }
 
     private func positionOnPointerScreen(ifNeeded: Bool) {
@@ -419,7 +464,8 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func installKeyMonitor() {
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.panel.isKeyWindow else { return event }
+            guard let self, !self.hasAttachedDialog,
+                  self.panel.isKeyWindow || self.previewController.window?.isKeyWindow == true else { return event }
             return self.handle(event) ? nil : event
         }
     }
@@ -437,26 +483,33 @@ final class PanelController: NSObject, NSWindowDelegate {
         externalApplicationDidActivate()
     }
 
-    private func handle(_ event: NSEvent) -> Bool {
+    func handle(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = flags.contains(.command)
-        let textView = panel.firstResponder as? NSTextView
-        let editingBody = textView?.isFieldEditor == false
-        let textInputActive = textView != nil
+        let activeWindow = previewController.window?.isKeyWindow == true ? previewController.window : panel
+        let textView = activeWindow?.firstResponder as? NSTextView
+        let previewHasFocus = activeWindow === previewController.window
+        let editingBody = (textView?.isFieldEditor == false && textView?.isEditable == true)
+            || (previewHasFocus && model.isPreviewEditing)
+        let textInputActive = textView?.isEditable == true
+        let hasTextSelection = (textView?.selectedRange().length ?? 0) > 0
         let hasMarkedText = textView?.hasMarkedText() ?? false
         let isListPage = model.page != .statistics
         let hasNavigationModifiers = !flags.intersection([.command, .option, .control, .shift]).isEmpty
 
         if command {
             if event.keyCode == 51 {
-                guard isListPage, !textInputActive else { return false }
+                guard isListPage, !textInputActive, !editingBody else { return false }
                 if let item = model.selectedItem { model.delete(item) }
                 return true
             }
             switch event.charactersIgnoringModifiers {
             case "1": model.show(page: .history); return true
             case "2": model.show(page: .favorites); return true
-            case "f": model.focusSearch(); return true
+            case "f":
+                panel.makeKey()
+                model.focusSearch()
+                return true
             case "i" where isListPage: model.toggleDetails(); return true
             case "d" where isListPage:
                 if let item = model.selectedItem { model.toggleFavorite(item) }
@@ -465,7 +518,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                 if let item = model.selectedItem, item.kind == .image { model.imageEditorItem = item }
                 return itemCanBeEdited
             case "\r" where isListPage && !hasMarkedText: model.copySelected(autoPaste: true); return true
-            case "c" where isListPage && !textInputActive:
+            case "c" where isListPage && !textInputActive && !hasTextSelection:
                 model.copySelected(autoPaste: false)
                 return true
             default: break
@@ -493,7 +546,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                currentPage: model.page,
                direction: horizontalDirection,
                hasDisallowedModifiers: hasNavigationModifiers,
-               isEditingBody: editingBody,
+               isEditingBody: editingBody || previewHasFocus,
                searchIsEmpty: model.query.isEmpty,
                hasMarkedText: hasMarkedText
            ) {
@@ -515,7 +568,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                hasDisallowedModifiers: hasNavigationModifiers,
                isEditingBody: editingBody,
                isTextInputActive: textInputActive,
-               searchIsEmpty: model.query.isEmpty,
+               searchIsEmpty: previewHasFocus || model.query.isEmpty,
                hasMarkedText: hasMarkedText
            ) {
             model.toggleDetails()
