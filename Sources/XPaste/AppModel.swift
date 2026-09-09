@@ -19,16 +19,6 @@ enum PanelPage: String, CaseIterable, Identifiable {
     }
 }
 
-actor ImageProcessingQueue {
-    func process(_ data: Data) async throws -> ProcessedImage {
-        try await ImageProcessor.process(data)
-    }
-
-    func edit(_ data: Data, operations: [ImageEditOperation]) async throws -> ProcessedImage {
-        try await ImageProcessor.edit(data, operations: operations)
-    }
-}
-
 @MainActor
 @Observable
 final class AppModel {
@@ -90,7 +80,7 @@ final class AppModel {
     @ObservationIgnored var onPreviewVisibilityChange: (() -> Void)?
     @ObservationIgnored var onPanelPinChange: ((Bool) -> Void)?
 
-    @ObservationIgnored private let imageQueue = ImageProcessingQueue()
+    @ObservationIgnored private var activeCaptures = 0
     @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var deletionTask: Task<Void, Never>?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
@@ -195,9 +185,14 @@ final class AppModel {
     func record(_ capture: ClipboardCapture) {
         let maxBytes = settings.maxCaptureMegabytes * 1_024 * 1_024
         let maxItems = settings.maxItems
+        let capturedAt = Date()
+        activeCaptures += 1
         isProcessingCapture = true
         Task {
-            defer { isProcessingCapture = false }
+            defer {
+                activeCaptures -= 1
+                isProcessingCapture = activeCaptures > 0
+            }
             do {
                 let payload: CapturePayload
                 switch capture {
@@ -209,8 +204,9 @@ final class AppModel {
                     payload = CapturePayload(
                         kind: .text,
                         text: text,
-                        contentHash: ContentHasher.text(text),
-                        sourceAppBundleIdentifier: sourceApp
+                        contentHash: await Task.detached(priority: .utility) { ContentHasher.text(text) }.value,
+                        sourceAppBundleIdentifier: sourceApp,
+                        capturedAt: capturedAt
                     )
                 case .files(let references, let sourceApp):
                     let paths = references.map(\.path)
@@ -218,15 +214,16 @@ final class AppModel {
                         kind: .files,
                         filePaths: paths,
                         fileBookmarks: references.map(\.bookmarkData),
-                        contentHash: ContentHasher.files(paths),
-                        sourceAppBundleIdentifier: sourceApp
+                        contentHash: await Task.detached(priority: .utility) { ContentHasher.files(paths) }.value,
+                        sourceAppBundleIdentifier: sourceApp,
+                        capturedAt: capturedAt
                     )
                 case .image(let data, let sourceApp):
                     guard data.count <= maxBytes else {
                         showToast("图片超过 \(settings.maxCaptureMegabytes) MB，已跳过")
                         return
                     }
-                    let processed = try await imageQueue.process(data)
+                    let processed = try await ImageProcessor.process(data)
                     guard processed.pngData.count <= maxBytes else {
                         showToast("图片编码后超过大小上限，已跳过")
                         return
@@ -236,8 +233,9 @@ final class AppModel {
                         imageData: processed.pngData,
                         thumbnailData: processed.thumbnailData,
                         imageUTI: "public.png",
-                        contentHash: ContentHasher.data(processed.pngData),
-                        sourceAppBundleIdentifier: sourceApp
+                        contentHash: processed.contentHash,
+                        sourceAppBundleIdentifier: sourceApp,
+                        capturedAt: capturedAt
                     )
                 }
                 let state = try await repository.record(payload, maxItems: maxItems)
@@ -282,13 +280,16 @@ final class AppModel {
     func saveImageEdits(item: ClipboardItem, operations: [ImageEditOperation]) async -> Bool {
         guard let fileName = item.imageFileName else { return false }
         do {
-            let sourceData = try Data(contentsOf: repository.assetURL(fileName: fileName), options: .mappedIfSafe)
-            let processed = try await imageQueue.edit(sourceData, operations: operations)
+            let url = repository.assetURL(fileName: fileName)
+            let sourceData = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url, options: .mappedIfSafe)
+            }.value
+            let processed = try await ImageProcessor.edit(sourceData, operations: operations)
             let state = try await repository.updateImage(
                 id: item.id,
                 imageData: processed.pngData,
                 thumbnailData: processed.thumbnailData,
-                contentHash: ContentHasher.data(processed.pngData)
+                contentHash: processed.contentHash
             )
             apply(state)
             showToast("图片编辑已保存")

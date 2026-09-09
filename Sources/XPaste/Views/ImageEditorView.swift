@@ -11,6 +11,7 @@ struct ImageEditorView: View {
     @State private var operations: [ImageEditOperation] = []
     @State private var isRendering = true
     @State private var isSaving = false
+    @State private var previewTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -79,11 +80,15 @@ struct ImageEditorView: View {
         .frame(width: 720, height: 530)
         .background(PanelTheme.canvas)
         .tint(PanelTheme.accent)
-        .task { load() }
+        .task { await load() }
+        .onDisappear { previewTask?.cancel() }
     }
 
-    private func load() {
-        guard let url = model.assetURL(for: item), let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+    private func load() async {
+        guard let url = model.assetURL(for: item),
+              let data = try? await Task.detached(priority: .userInitiated, operation: {
+                  try Data(contentsOf: url, options: .mappedIfSafe)
+              }).value, !Task.isCancelled else {
             isRendering = false
             return
         }
@@ -104,6 +109,7 @@ struct ImageEditorView: View {
     }
 
     private func renderPreview() {
+        previewTask?.cancel()
         guard let originalData else { return }
         if operations.isEmpty {
             previewImage = NSImage(data: originalData)
@@ -112,11 +118,19 @@ struct ImageEditorView: View {
         }
         let requested = operations
         isRendering = true
-        Task {
-            let result = try? await ImageProcessor.edit(originalData, operations: requested)
-            guard requested == operations else { return }
-            previewImage = result.flatMap { NSImage(data: $0.pngData) }
-            isRendering = false
+        previewTask = Task {
+            do {
+                let result = try await ImageProcessor.edit(originalData, operations: requested)
+                guard !Task.isCancelled, requested == operations else { return }
+                previewImage = NSImage(data: result.pngData)
+                isRendering = false
+            } catch is CancellationError {
+                // A newer preview owns the loading state.
+            } catch {
+                guard !Task.isCancelled, requested == operations else { return }
+                isRendering = false
+                model.showToast(error.localizedDescription)
+            }
         }
     }
 

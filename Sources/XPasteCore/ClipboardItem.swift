@@ -62,7 +62,10 @@ public struct FileResolutionReport: Sendable, Equatable {
 public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var kind: ClipboardKind
-    public var text: String?
+    public var text: String? {
+        didSet { textSummary = ClipboardTextSummary(text) }
+    }
+    private var textSummary = ClipboardTextSummary(nil)
     public var imageFileName: String?
     public var thumbnailFileName: String?
     public var imageUTI: String?
@@ -102,6 +105,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.id = id
         self.kind = kind
         self.text = text
+        self.textSummary = ClipboardTextSummary(text)
         self.imageFileName = imageFileName
         self.thumbnailFileName = thumbnailFileName
         self.imageUTI = imageUTI
@@ -145,6 +149,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         id = try container.decode(UUID.self, forKey: .id)
         kind = try container.decode(ClipboardKind.self, forKey: .kind)
         text = try container.decodeIfPresent(String.self, forKey: .text)
+        textSummary = ClipboardTextSummary(text)
         imageFileName = try container.decodeIfPresent(String.self, forKey: .imageFileName)
         thumbnailFileName = try container.decodeIfPresent(String.self, forKey: .thumbnailFileName)
         imageUTI = try container.decodeIfPresent(String.self, forKey: .imageUTI)
@@ -171,8 +176,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public var title: String {
         switch kind {
         case .text:
-            let first = text?.split(whereSeparator: \Character.isNewline).first.map(String.init) ?? "空文本"
-            return first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "空文本" : first
+            return textSummary.title
         case .image:
             return "图片"
         case .files:
@@ -186,7 +190,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public var previewText: String {
         switch kind {
         case .text:
-            return text?.replacingOccurrences(of: "\n", with: " ") ?? ""
+            return textSummary.preview
         case .image:
             return ByteCountFormatter.string(fromByteCount: Int64(contentBytes), countStyle: .file)
         case .files:
@@ -253,5 +257,22 @@ public struct CapturePayload: Sendable {
         self.contentHash = contentHash
         self.sourceAppBundleIdentifier = sourceAppBundleIdentifier
         self.capturedAt = capturedAt
+    }
+}
+
+/// Derived, non-persisted summaries. Bound work by Unicode scalars so even a
+/// pathological combining-character sequence cannot make a row scan the body.
+private struct ClipboardTextSummary: Hashable, Sendable {
+    let title: String
+    let preview: String
+
+    init(_ text: String?) {
+        guard let text else { title = "空文本"; preview = ""; return }
+        let prefix = String(String.UnicodeScalarView(text.unicodeScalars.prefix(512)))
+        let first = prefix.split(whereSeparator: \Character.isNewline).first.map(String.init) ?? ""
+        title = first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "空文本"
+            : String(String.UnicodeScalarView(first.unicodeScalars.prefix(256)))
+        preview = prefix.replacingOccurrences(of: "\n", with: " ")
     }
 }

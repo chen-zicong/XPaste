@@ -10,18 +10,29 @@ struct ProcessedImage: @unchecked Sendable {
     var thumbnailData: Data
     var pixelWidth: Int
     var pixelHeight: Int
+    let contentHash: String
+
+    init(pngData: Data, thumbnailData: Data, pixelWidth: Int, pixelHeight: Int) {
+        self.pngData = pngData
+        self.thumbnailData = thumbnailData
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.contentHash = ContentHasher.data(pngData)
+    }
 }
 
 enum ImageProcessingError: LocalizedError {
     case unreadable
     case tooManyPixels
     case encodingFailed
+    case queueFull
 
     var errorDescription: String? {
         switch self {
         case .unreadable: "无法读取这张图片"
         case .tooManyPixels: "图片像素尺寸过大，已跳过以保护内存"
         case .encodingFailed: "图片编码失败"
+        case .queueFull: "图片处理队列已满，已跳过本次操作，请稍后重试"
         }
     }
 }
@@ -36,7 +47,21 @@ enum ImageEditOperation: String, CaseIterable, Identifiable {
 }
 
 enum ImageProcessor {
+    private static let queue = ImageProcessingQueue()
+
     static func process(_ sourceData: Data) async throws -> ProcessedImage {
+        try await queue.run(byteCount: sourceData.count) {
+            try await processUnqueued(sourceData)
+        }
+    }
+
+    static func edit(_ sourceData: Data, operations: [ImageEditOperation]) async throws -> ProcessedImage {
+        try await queue.run(byteCount: sourceData.count) {
+            try await editUnqueued(sourceData, operations: operations)
+        }
+    }
+
+    private static func processUnqueued(_ sourceData: Data) async throws -> ProcessedImage {
         try await Task.detached(priority: .utility) {
             try autoreleasepool {
                 guard let source = CGImageSourceCreateWithData(sourceData as CFData, [
@@ -89,7 +114,7 @@ enum ImageProcessor {
         }.value
     }
 
-    static func edit(_ sourceData: Data, operations: [ImageEditOperation]) async throws -> ProcessedImage {
+    private static func editUnqueued(_ sourceData: Data, operations: [ImageEditOperation]) async throws -> ProcessedImage {
         try await Task.detached(priority: .userInitiated) {
             try autoreleasepool {
                 guard let source = CGImageSourceCreateWithData(sourceData as CFData, nil),
